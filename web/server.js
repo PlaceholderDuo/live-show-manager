@@ -61,7 +61,16 @@ const OSC_OUT_HOST = "127.0.0.1";
 const PUBLIC_DIR = path.join(__dirname, "public");
 const REAPER_SONGS_PATH = path.join(os.homedir(), "ReaperSongs");
 const BUMPER_DIR = path.join(os.homedir(), "bumper-music");
-const BUMPER_VOLUME = "0.2"; // 20% — raw tracks are louder than mixer output
+const BUMPER_VOLUME_FILE = path.join(os.homedir(), ".bumper-volume");
+
+function loadBumperVolume() {
+  try { return parseFloat(fs.readFileSync(BUMPER_VOLUME_FILE, "utf-8").trim()) || 0.2; }
+  catch { return 0.2; }
+}
+function saveBumperVolume(v) {
+  fs.writeFileSync(BUMPER_VOLUME_FILE, String(v), "utf-8");
+}
+let bumperVolume = loadBumperVolume();
 
 // ═══════════════════════════════════════════════════════════
 // BUMPER MUSIC ENGINE (on-demand, zero resources when idle)
@@ -71,6 +80,8 @@ let bumperPlaying = false;
 let bumperPlaylist = [];
 let bumperIndex = 0;
 let bumperScanned = false;
+let bumperGracefulStop = false;
+let bumperExplicitStop = false;
 
 function scanBumperMusic() {
   try {
@@ -96,12 +107,19 @@ function bumperPlay(trackPath) {
     trackPath = bumperPlaylist[bumperIndex];
   }
   console.log("[Bumper] Play", path.basename(trackPath));
-  bumperProcess = cp.spawn("afplay", ["-v", BUMPER_VOLUME, trackPath], { stdio: "ignore" });
+  bumperProcess = cp.spawn("afplay", ["-v", String(bumperVolume), trackPath], { stdio: "ignore" });
   bumperPlaying = true;
   bumperProcess.on("exit", () => {
     bumperPlaying = false;
     bumperProcess = null;
-    bumperIndex = (bumperIndex + 1) % bumperPlaylist.length;
+    if (bumperExplicitStop) {
+      bumperExplicitStop = false;
+    } else if (bumperGracefulStop) {
+      bumperGracefulStop = false;
+    } else {
+      bumperIndex = (bumperIndex + 1) % bumperPlaylist.length;
+      bumperPlay(null);
+    }
     broadcastBumperStatus();
   });
   broadcastBumperStatus();
@@ -110,6 +128,16 @@ function bumperPlay(trackPath) {
 function bumperStop() {
   if (bumperProcess) { bumperProcess.kill(); bumperProcess = null; }
   bumperPlaying = false;
+  bumperGracefulStop = false;
+  bumperExplicitStop = true;
+  broadcastBumperStatus();
+}
+
+function bumperStopGraceful() {
+  if (bumperPlaying) {
+    bumperGracefulStop = true;
+    console.log("[Bumper] Will stop after current track");
+  }
   broadcastBumperStatus();
 }
 
@@ -132,6 +160,7 @@ function getBumperStatus() {
       ? path.basename(bumperPlaylist[bumperIndex]).replace(/\.[^.]+$/, "")
       : null,
     queueSize: bumperScanned ? bumperPlaylist.length : 0,
+    volume: Math.round(bumperVolume * 100)
   };
 }
 
@@ -686,9 +715,20 @@ app.get("/bumper/api/status", (req, res) => {
   res.json(getBumperStatus());
 });
 app.post("/bumper/api/toggle", (req, res) => { bumperToggle(); res.json(getBumperStatus()); });
-app.post("/bumper/api/play", (req, res) => { bumperPlay(null); res.json(getBumperStatus()); });
+app.post("/bumper/api/play", (req, res) => { bumperExplicitStop = false; bumperPlay(null); res.json(getBumperStatus()); });
 app.post("/bumper/api/stop", (req, res) => { bumperStop(); res.json(getBumperStatus()); });
+app.post("/bumper/api/stop-graceful", (req, res) => { bumperStopGraceful(); res.json(getBumperStatus()); });
 app.post("/bumper/api/skip", (req, res) => { bumperSkip(); res.json(getBumperStatus()); });
+app.post("/bumper/api/volume/up", (req, res) => {
+  bumperVolume = Math.min(1.0, Math.round((bumperVolume + 0.05) * 100) / 100);
+  saveBumperVolume(bumperVolume);
+  res.json(getBumperStatus());
+});
+app.post("/bumper/api/volume/down", (req, res) => {
+  bumperVolume = Math.max(0.05, Math.round((bumperVolume - 0.05) * 100) / 100);
+  saveBumperVolume(bumperVolume);
+  res.json(getBumperStatus());
+});
 app.use("/bumper-music", express.static(BUMPER_DIR, { maxAge: 0 }));
 
 // ═══════════════════════════════════════════════════════════
