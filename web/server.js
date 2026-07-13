@@ -199,6 +199,75 @@ const MOBIUS_CC = {
   undo: 26,
 };
 
+// ═══════════════════════════════════════════════════════════
+// MIDI INPUT (ReaTune pitch detection → iPhone tuner)
+// ═══════════════════════════════════════════════════════════
+// ReaTune sends MIDI note + pitch bend when "Send MIDI events
+// when pitch changes" is enabled. This listener converts those
+// to the tuner OSC format and relays to iPhone via WebSocket.
+// Clears tuner after 1.5s of silence (no note detected).
+let midiIn = null;
+let tunerCurrentNote = null;
+let tunerLastUpdate = 0;
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+function detectString(midiNote) {
+  const strings = [
+    { name: "6 (low E)", midi: 40 },
+    { name: "5 (A)",     midi: 45 },
+    { name: "4 (D)",     midi: 50 },
+    { name: "3 (G)",     midi: 55 },
+    { name: "2 (B)",     midi: 59 },
+    { name: "1 (high E)",midi: 64 },
+  ];
+  let best = strings[0], bestDist = Math.abs(midiNote - best.midi);
+  for (const s of strings) {
+    const d = Math.min(Math.abs(midiNote - s.midi), Math.abs(midiNote - s.midi - 12));
+    if (d < bestDist) { bestDist = d; best = s; }
+  }
+  return best.name;
+}
+
+function noteName(midiNote) {
+  if (midiNote == null) return "--";
+  return NOTE_NAMES[midiNote % 12] + (Math.floor(midiNote / 12) - 1);
+}
+
+function emitTuner(note, cents, freq, str) {
+  state.tuner = { note, cents, frequency: freq, string: str };
+  io.emit("tuner", state.tuner);
+  tunerLastUpdate = Date.now();
+}
+
+setInterval(() => {
+  if (state.tuner && state.tuner.note !== "--" && Date.now() - tunerLastUpdate > 1500) {
+    emitTuner("--", 0, 0, "");
+  }
+}, 500);
+
+try {
+  midiIn = new easymidi.Input("Live Show Manager Tuner", true);
+  console.log("[MIDI In] Listening on 'Live Show Manager Tuner'");
+
+  midiIn.on("noteon", (msg) => {
+    if (msg.velocity > 0) {
+      tunerCurrentNote = msg.note;
+      const freq = 440 * Math.pow(2, (msg.note - 69) / 12);
+      emitTuner(noteName(msg.note), 0, freq, detectString(msg.note));
+    }
+  });
+
+  midiIn.on("pitch", (msg) => {
+    if (tunerCurrentNote == null) return;
+    const cents = ((msg.value - 8192) / 8192) * 200;
+    const freq = 440 * Math.pow(2, (tunerCurrentNote - 69 + cents / 100) / 12);
+    emitTuner(noteName(tunerCurrentNote), Math.round(cents * 10) / 10, freq, detectString(tunerCurrentNote));
+  });
+
+} catch (err) {
+  console.warn("[MIDI In] Could not create input:", err.message);
+}
+
 // Alesis V25 knob CC assignments (configure on V25 hardware)
 const ALESIS_CC = { 1: 70, 2: 71, 3: 72, 4: 73 };
 
@@ -1399,9 +1468,9 @@ server.listen(PORT, "0.0.0.0", () => {
       "-R", hostname, "_http._tcp", ".", String(PORT)
     ], { stdio: ["ignore", "ignore", "ignore"], detached: false });
     bonjourSvc.unref();
-    process.on("exit", () => { try { bumperStop(); bonjourSvc.kill(); } catch {} });
-    process.on("SIGINT", () => { try { bumperStop(); bonjourSvc.kill(); } catch {} });
-    process.on("SIGTERM", () => { try { bumperStop(); bonjourSvc.kill(); } catch {} });
+    process.on("exit", () => { try { bumperStop(); midiIn && midiIn.close(); bonjourSvc.kill(); } catch {} });
+    process.on("SIGINT", () => { try { bumperStop(); midiIn && midiIn.close(); bonjourSvc.kill(); } catch {} });
+    process.on("SIGTERM", () => { try { bumperStop(); midiIn && midiIn.close(); bonjourSvc.kill(); } catch {} });
   } catch (err) {
     // dns-sd may not be available — skip
   }
