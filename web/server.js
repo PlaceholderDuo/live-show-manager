@@ -722,11 +722,23 @@ app.post("/bumper/api/skip", (req, res) => { bumperSkip(); res.json(getBumperSta
 app.post("/bumper/api/volume/up", (req, res) => {
   bumperVolume = Math.min(1.0, Math.round((bumperVolume + 0.05) * 100) / 100);
   saveBumperVolume(bumperVolume);
+  if (bumperPlaying && bumperProcess) {
+    bumperProcess.kill();
+    bumperProcess = null;
+    bumperExplicitStop = false;
+    bumperPlay(bumperPlaylist[bumperIndex]);
+  }
   res.json(getBumperStatus());
 });
 app.post("/bumper/api/volume/down", (req, res) => {
   bumperVolume = Math.max(0.05, Math.round((bumperVolume - 0.05) * 100) / 100);
   saveBumperVolume(bumperVolume);
+  if (bumperPlaying && bumperProcess) {
+    bumperProcess.kill();
+    bumperProcess = null;
+    bumperExplicitStop = false;
+    bumperPlay(bumperPlaylist[bumperIndex]);
+  }
   res.json(getBumperStatus());
 });
 app.use("/bumper-music", express.static(BUMPER_DIR, { maxAge: 0 }));
