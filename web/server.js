@@ -126,7 +126,11 @@ function bumperPlay(trackPath) {
 }
 
 function bumperStop() {
-  if (bumperProcess) { bumperProcess.kill(); bumperProcess = null; }
+  if (bumperProcess) {
+    bumperProcess.removeAllListeners("exit");
+    bumperProcess.kill();
+    bumperProcess = null;
+  }
   bumperPlaying = false;
   bumperGracefulStop = false;
   bumperExplicitStop = true;
@@ -243,10 +247,23 @@ const state = {
   remaining: "0:00",
   regions: [],
   sections: [],
+  // OSC feedback from REAPER (track volumes, FX params, tuner data, etc.)
+  trackVolumes: {},       // { trackIdx: dB }
+  trackMutes: {},         // { trackIdx: true/false }
+  trackNames: {},         // { trackIdx: "name" }
+  fxParams: {},           // { "track-fx-param": value }
+  tuner: null,            // { note: "A", cents: -3.2, frequency: 438.7, string: "A (5)" }
+  activeAmpPreset: "OSD",
+  activeScene: 0,
+  keysOn: true,
+  mixerValues: {},        // EDM knob values relayed from ReaLearn → REAPER → here
 };
 
 // Per-client context for knob routing
 const clientContexts = new Map();
+
+// Tap tempo accumulator
+let tapTimes = [];
 
 // ── Song sections: derived from meta.json lyrics array ──
 // Converts bar-positioned lyric entries to timed sections.
@@ -764,7 +781,8 @@ const REAPER_ACTIONS = {
 };
 
 function broadcastState() {
-  io.emit("state", state);
+  const payload = { ...state, mixerValues: { ...state.mixerValues }, fxParams: { ...state.fxParams } };
+  io.emit("state", payload);
 }
 
 oscPort.on("ready", () => {
@@ -779,6 +797,55 @@ oscPort.on("message", (oscMsg) => {
   else if (address === "/stop") { state.playing = false; broadcastState(); }
   else if (address === "/time") {
     if (args && args[0] !== undefined) state.position = args[0];
+  }
+
+  // ── Track volume feedback: /track/{N}/volume [dB] ──
+  else if (/^\/track\/(\d+)\/volume$/.test(address)) {
+    const m = address.match(/^\/track\/(\d+)\/volume$/);
+    const val = args && args[0] !== undefined ? parseFloat(args[0]) : 0;
+    state.trackVolumes[m[1]] = val;
+  }
+
+  // ── Track mute feedback: /track/{N}/mute [0/1] ──
+  else if (/^\/track\/(\d+)\/mute$/.test(address)) {
+    const m = address.match(/^\/track\/(\d+)\/mute$/);
+    state.trackMutes[m[1]] = args && args[0] ? true : false;
+  }
+
+  // ── Track name feedback: /track/{N}/name ──
+  else if (/^\/track\/(\d+)\/name$/.test(address)) {
+    const m = address.match(/^\/track\/(\d+)\/name$/);
+    state.trackNames[m[1]] = args && args[0] || "";
+  }
+
+  // ── FX parameter feedback: /track/{N}/fx/{F}/param/{P}/value ──
+  else if (/^\/track\/(\d+)\/fx\/(\d+)\/param\/(\d+)\/value$/.test(address)) {
+    const m = address.match(/^\/track\/(\d+)\/fx\/(\d+)\/param\/(\d+)\/value$/);
+    const key = `${m[1]}-${m[2]}-${m[3]}`;
+    state.fxParams[key] = args && args[0] !== undefined ? parseFloat(args[0]) : 0;
+  }
+
+  // ── Tuner data: /tuner [note_str, cents, frequency, string_str] ──
+  else if (address === "/tuner") {
+    state.tuner = {
+      note: args && args[0] || "--",
+      cents: args && args[1] !== undefined ? parseFloat(args[1]) : 0,
+      frequency: args && args[2] !== undefined ? parseFloat(args[2]) : 0,
+      string: args && args[3] || "",
+    };
+    io.emit("tuner", state.tuner);
+  }
+
+  // ── Master BPM feedback ──
+  else if (address === "/master/beats/minute") {
+    if (args && args[0] !== undefined) state.bpm = parseFloat(args[0]);
+  }
+
+  // ── Generic value feedback (for knob labels) ──
+  // Format: /control/{param_name} [value]
+  else if (/^\/control\//.test(address)) {
+    const key = address.replace(/^\/control\//, "");
+    state.mixerValues[key] = args && args[0] !== undefined ? parseFloat(args[0]) : 0;
   }
 });
 
@@ -951,10 +1018,20 @@ io.on("connection", (socket) => {
 
       // ── Mix mute/solo (via OSC) ──
       case "mute":
-        sendOSC(`/track/${value}/mute`, [1]);
+        if (typeof value === 'object' && value.track !== undefined) {
+          sendOSC(`/track/${value.track}/mute`, [value.state ? 1 : 0]);
+          state.trackMutes[value.track] = value.state;
+          broadcastState();
+        } else {
+          sendOSC(`/track/${value}/mute`, [1]);
+        }
         break;
       case "solo":
-        sendOSC(`/track/${value}/solo`, [1]);
+        if (typeof value === 'object' && value.track !== undefined) {
+          sendOSC(`/track/${value.track}/solo`, [value.state ? 1 : 0]);
+        } else {
+          sendOSC(`/track/${value}/solo`, [1]);
+        }
         break;
 
       // ── Live Controller: Level-based mute (vocal/all/none) ──
@@ -983,6 +1060,8 @@ io.on("connection", (socket) => {
         if (scene >= 1 && scene <= 8) {
           const n = String(scene).padStart(2, "0");
           sendOSC(`/action/_SWSSNAPSHOT_GET_${n}`, []);
+          state.activeScene = scene;
+          broadcastState();
           console.log(`[Scene] Load snapshot ${scene}`);
         }
         break;
@@ -997,6 +1076,8 @@ io.on("connection", (socket) => {
         [3, 4, 5].forEach(function(ti) {
           sendOSC(`/track/${ti}/mute`, [on ? 0 : 1]);
         });
+        state.keysOn = on;
+        broadcastState();
         console.log(`[Keys] ${on ? 'ON' : 'OFF'}`);
         break;
       }
@@ -1018,15 +1099,37 @@ io.on("connection", (socket) => {
       // value.preset: "OSD" | "SSS" | "SSS CLN" | "BE" | "BE CLN" | "TRLX" | "TWD"
       case "gtr_amp_preset": {
         const preset = (value && value.preset) || "OSD";
-        // TODO: send OSC to Neural Amp Modeler to switch preset
-        console.log(`[GTR AMP] Preset: ${preset}`);
+        const GTR_TRACK = 6;
+        // NAM preset index mapping — adjust FX and param indices to match project
+        const NAM_PRESET_MAP = {
+          "OSD": 0, "SSS": 1, "SSS CLN": 2, "BE": 3, "BE CLN": 4, "TRLX": 5, "TWD": 6
+        };
+        const presetIdx = NAM_PRESET_MAP[preset] !== undefined ? NAM_PRESET_MAP[preset] : 0;
+        sendOSC(`/track/${GTR_TRACK}/fx/1/param/1/value`, [presetIdx / 6]);
+        state.activeAmpPreset = preset;
+        broadcastState();
+        console.log(`[GTR AMP] Preset: ${preset} → NAM index ${presetIdx}`);
         break;
       }
 
       // ── Live Controller: Tap tempo ──
       case "tap_tempo": {
-        // TODO: accumulate tap times, compute BPM, send /master/beats/minute
-        console.log(`[Tempo] Tap`);
+        const now = Date.now();
+        if (!tapTimes) tapTimes = [];
+        tapTimes.push(now);
+        while (tapTimes.length > 0 && now - tapTimes[0] > 3000) tapTimes.shift();
+        if (tapTimes.length >= 2) {
+          const intervals = [];
+          for (let i = 1; i < tapTimes.length; i++) {
+            intervals.push(tapTimes[i] - tapTimes[i - 1]);
+          }
+          const avgMs = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+          const bpm = Math.round((60000 / avgMs) * 10) / 10;
+          state.bpm = bpm;
+          sendOSC("/master/beats/minute", [bpm]);
+          broadcastState();
+          console.log(`[Tempo] ${tapTimes.length} taps → ${bpm} BPM`);
+        }
         break;
       }
 
@@ -1058,6 +1161,27 @@ io.on("connection", (socket) => {
       default:
         console.warn(`[Action] Unknown type: ${type}`);
     }
+  });
+
+  // ── EDM FX knob parameter changes (iPhone virtual knobs → REAPER) ──
+  socket.on("edmKnob", (data) => {
+    const { knob, value } = data || {};
+    const TRACK_MAP = { filter: 1, res: 2, rev: 3, delay: 4 };
+    const PARAM_MAP = { filter: 1, res: 2, rev: 1, delay: 1 };
+    const FX_MAP = { filter: 1, res: 1, rev: 2, delay: 3 };
+    const trackIdx = TRACK_MAP[knob] || 1;
+    const fxIdx = FX_MAP[knob] || 1;
+    const paramIdx = PARAM_MAP[knob] || 1;
+    sendOSC(`/track/${trackIdx}/fx/${fxIdx}/param/${paramIdx}/value`, [value]);
+  });
+
+  // ── GTR FX knob changes (iPhone → REAPER) ──
+  socket.on("gtrFxKnob", (data) => {
+    const { param, value } = data || {};
+    const GTR_TRACK = 6;
+    const PARAM_MAP = { delay_time: 1, feedback: 2, mod_rate: 3, mod_depth: 4 };
+    const paramIdx = PARAM_MAP[param] || 1;
+    sendOSC(`/track/${GTR_TRACK}/fx/1/param/${paramIdx}/value`, [value]);
   });
 
   // ── FX parameter change (via OSC) ──
