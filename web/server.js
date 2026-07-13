@@ -100,6 +100,7 @@ function scanBumperMusic() {
 
 function bumperPlay(trackPath) {
   bumperStop();
+  bumperExplicitStop = false;
   if (!bumperScanned) scanBumperMusic();
   if (!trackPath || !fs.existsSync(trackPath)) {
     if (bumperPlaylist.length === 0) { if (!bumperScanned) scanBumperMusic(); if (bumperPlaylist.length === 0) return; }
