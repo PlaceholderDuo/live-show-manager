@@ -1,0 +1,587 @@
+/* Live Stage HUD — Version 2 Professional Stage Monitor (Refined)
+   =================================================================
+   Redesigned to EXACTLY match the custom visual mockup.
+   Centered, high-density lyrics with bright yellow chords in brackets.
+   Proportional section-block timeline progress bar.
+   High-contrast white-box conductor beat metronome. */
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  font-family: "Montserrat", "Helvetica Neue", Arial, sans-serif;
+  font-size: calc(16px * var(--hud-scale, 1));
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.hud {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #000;
+}
+.hud::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url('/assets/placeholder-logo.png');
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-size: 35% auto;
+  opacity: 0.06;
+  z-index: 0;
+  pointer-events: none;
+}
+#hudGrid {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Heartbeat / Signal Lost Banner ── */
+#heartbeatBanner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  background: #cc0000;
+  color: #fff;
+  font-size: 1.75rem;
+  font-weight: 900;
+  text-align: center;
+  padding: 1.25rem;
+  z-index: 200;
+  letter-spacing: 4px;
+  animation: pulseBanner 1.2s ease-in-out infinite;
+  box-shadow: 0 4px 20px rgba(200,0,0,0.6);
+}
+@keyframes pulseBanner {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* ── Edge flash ── */
+#edgeFlashTop, #edgeFlashBottom {
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 0;
+  z-index: 100;
+  pointer-events: none;
+  transition: height 0s, opacity 0.3s;
+  opacity: 0;
+}
+#edgeFlashTop    { top: 0; background: linear-gradient(to bottom, rgba(255,255,255,0.25), transparent); }
+#edgeFlashBottom { bottom: 0; background: linear-gradient(to top, rgba(255,255,255,0.25), transparent); }
+.edge-flash-active {
+  height: 8% !important;
+  opacity: 1 !important;
+  transition: height 0s, opacity 0.05s;
+}
+
+#hudGrid {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 16px 32px;
+  min-height: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GLOBAL HEADER — Left Metadata & High-Contrast Conductor
+   ═══════════════════════════════════════════════════════════ */
+#hudHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 8px 0;
+  flex: 0 0 auto;
+  min-height: 13vh;
+}
+
+#headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  line-height: 1.25;
+}
+
+.meta-row-clean {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #888;
+  text-transform: uppercase;
+}
+.meta-row-clean span {
+  color: #fff; /* white values for contrast */
+}
+
+/* Conductor box: white background, black text, rounded, scaled down 30% */
+#conductorContainer {
+  display: flex;
+  align-items: center;
+  background: #fff;
+  color: #000;
+  padding: 6px 20px;
+  border-radius: 8px;
+  font-weight: 800;
+  font-size: 1.75rem;
+  font-family: "Montserrat", sans-serif;
+  letter-spacing: 1px;
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.1);
+  margin-top: 4px;
+}
+
+#barCounter {
+  margin-right: 8px;
+  font-weight: 800;
+}
+
+#beatDivider {
+  margin: 0 12px;
+  color: #ddd;
+  font-weight: 300;
+}
+
+#beatCounter {
+  display: flex;
+  gap: 8px;
+}
+
+.beat-node {
+  color: #bbb;
+  font-weight: 500;
+  transition: color 0.05s, transform 0.05s;
+}
+.beat-node.active {
+  color: #000;
+  font-weight: 900;
+  transform: scale(1.15);
+}
+
+#headerRight {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+#connectionStatus {
+  font-size: 0.875rem;
+  color: #555;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PERFORMANCE ZONE (Middle 70%) — Center Aligned 3-Line Engine
+   ═══════════════════════════════════════════════════════════ */
+#hudLyrics {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  min-height: 0;
+  padding: 8px 0;
+  position: relative;
+}
+
+#lyricEngine {
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* Active Section Box (centered cyan) */
+#currentSectionLabel {
+  font-size: 1.25rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: #4fc3f7; /* solid light-blue */
+  margin-bottom: 8px;
+  letter-spacing: 2px;
+}
+
+/* Future transition cue (centered cyan) */
+#futureSectionLabel {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: #4fc3f7;
+  margin-top: 16px;
+  letter-spacing: 1px;
+}
+
+/* Three-line teleprompter lines */
+.tp-line {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  transition: opacity 0.25s, transform 0.25s;
+}
+
+/* Center-aligned chord-word segment wrappers */
+.tp-line-content {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  text-align: center;
+}
+
+/* Individual chord-word pairs */
+.chord-word-pair {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.chord-word-pair .chord {
+  display: block;
+  font-size: 2.4rem; /* chords slightly larger */
+  font-weight: 800;
+  color: #ffff00; /* bright warning yellow chords */
+  line-height: 1.1;
+  white-space: pre;
+}
+
+.chord-word-pair .chord.empty {
+  visibility: hidden;
+}
+
+.chord-word-pair .word {
+  display: block;
+  font-size: 4.4rem; /* lyrics scaled up slightly */
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: pre;
+}
+
+/* Opacity states — 6-line rolling engine */
+.tp-line.past-3 {
+  opacity: 0.40;
+}
+.tp-line.past-3 .chord {
+  display: none;
+}
+.tp-line.past-3 .word {
+  font-size: 1.8rem;
+  color: #888;
+}
+
+.tp-line.past-2 {
+  opacity: 0.55;
+}
+.tp-line.past-2 .chord {
+  display: none;
+}
+.tp-line.past-2 .word {
+  font-size: 2.2rem;
+  color: #aaa;
+}
+
+.tp-line.past-1 {
+  opacity: 0.70;
+}
+.tp-line.past-1 .chord {
+  display: none;
+}
+.tp-line.past-1 .word {
+  font-size: 2.6rem;
+  color: #ccc;
+}
+
+.tp-line.present {
+  opacity: 1.0;
+}
+.tp-line.present .word {
+  font-size: 4.4rem;
+  color: #ffffff;
+}
+.tp-line.present.harmony .word {
+  color: #ffeb3b;
+}
+
+.tp-line.future-1 {
+  opacity: 0.80;
+}
+.tp-line.future-1 .chord {
+  opacity: 0.4;
+}
+.tp-line.future-1 .word {
+  font-size: 3.6rem;
+  color: #ddd;
+}
+
+.tp-line.future-2 {
+  opacity: 0.60;
+}
+.tp-line.future-2 .chord {
+  display: none;
+}
+.tp-line.future-2 .word {
+  font-size: 2.8rem;
+  color: #bbb;
+}
+
+/* Solo Protocol Grid */
+.solo-engine {
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 24px;
+}
+
+.solo-grid {
+  display: flex;
+  justify-content: center;
+  gap: 24px 32px;
+  flex-wrap: wrap;
+  max-width: 90%;
+}
+
+.solo-grid .chord {
+  font-size: 6rem;
+  font-weight: 800;
+  color: #ff5500;
+  text-shadow: 0 0 10px rgba(255, 85, 0, 0.3);
+}
+
+.solo-progress-bar {
+  width: 60%;
+  height: 8px;
+  background: #111;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid #333;
+}
+
+.solo-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: #ff5500;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.solo-cue {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-family: "SF Mono", monospace;
+  color: #555;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* Waiting / empty state */
+.waiting {
+  font-size: 2.25rem;
+  font-weight: 300;
+  color: #333;
+  text-align: center;
+}
+
+/* Notes bar */
+#hudNotes {
+  position: absolute;
+  bottom: 0.25rem;
+  left: 0;
+  right: 0;
+  font-size: 1rem;
+  font-family: "SF Mono", Menlo, monospace;
+  color: #555;
+  opacity: 0;
+  transition: opacity 0.5s;
+  padding: 0.25rem 0;
+  pointer-events: none;
+}
+#hudNotes.visible { opacity: 1; }
+
+/* Meter row — thin audio level strip between lyrics and footer */
+.meter-row {
+  display: flex;
+  gap: 4px;
+  padding: 2px 0;
+  flex: 0 0 auto;
+}
+.meter-strip {
+  flex: 1;
+  height: 5px;
+  background: #1a1a1a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.15s;
+  background: #2ecc71;
+}
+.meter-fill.warn { background: #f1c40f; }
+.meter-fill.clip { background: #e74c3c; }
+
+/* ═══════════════════════════════════════════════════════════
+   FOOTER (STATUS ANCHOR) — Proportional blocks progress bar
+   ═══════════════════════════════════════════════════════════ */
+#hudFooter {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 0 16px;
+  min-height: 15vh;
+}
+
+#footerCenter {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Proportional capsule progress bar with white outlines, scaled down 15% */
+#timelineContainer {
+  position: relative;
+  width: 100%;
+  height: 28px; /* scaled down 15% from 34px */
+  background: #111;
+  border-radius: 6px;
+  border: 1.5px solid #ffffff; /* thin white border */
+  overflow: hidden;
+}
+
+#timelineNotches {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  z-index: 1;
+}
+
+/* Individual proportional blocks */
+.timeline-block {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  font-family: "SF Mono", Menlo, monospace;
+  border-right: 1.5px solid #ffffff;
+  transition: background 0.3s, color 0.3s;
+}
+.timeline-block:last-child {
+  border-right: none;
+}
+
+/* Past blocks are solid white with black text */
+.timeline-block.past {
+  background: #ffffff;
+  color: #000000;
+}
+
+/* Future blocks are solid dark grey with white text */
+.timeline-block.future {
+  background: #888888;
+  color: #ffffff;
+}
+
+/* Playhead bar (thin vertical bright green bar) */
+#progressFill {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 4px;
+  height: 120%;
+  background: #2ecc71; /* bright green playhead */
+  z-index: 10;
+  box-shadow: 0 0 8px #2ecc71;
+  transition: left 0.3s ease;
+}
+
+#footerTimeRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 1rem;
+  color: #555;
+  padding: 0 0.25rem;
+}
+
+/* NEXT song badge at the bottom center with thin border */
+#bottomNextContainer {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+#bottomNextBadge {
+  display: inline-block;
+  padding: 0.25rem 1rem;
+  border: 1.5px solid #ffffff;
+  border-radius: 0.25rem;
+  background: #000;
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: "SF Mono", Menlo, monospace;
+  color: #fff;
+  text-transform: uppercase;
+}
+#bottomNextBadge span {
+  color: #2ecc71;
+}
+
+#footerRight {
+  position: absolute;
+  bottom: 16px;
+  right: 32px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 10;
+}
+
+/* Subtle metronome beat 1 dot */
+#metronomeDot {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background: #222;
+  border-radius: 50%;
+  transition: background 0.05s, box-shadow 0.05s;
+}
+#metronomeDot.pulse {
+  background: #ffffff;
+  box-shadow: 0 0 15px #ffffff, 0 0 5px #ffffff;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   RESPONSIVE Adjustments
+   ═══════════════════════════════════════════════════════════ */
+@media (max-height: 700px) {
+  .meta-row-clean { font-size: 1rem; }
+  #conductorContainer { font-size: 1.5rem; padding: 6px 16px; }
+  .chord-word-pair .chord { font-size: 1.8rem; }
+  .chord-word-pair .word { font-size: 3.4rem; }
+  .tp-line.past-3 .word { font-size: 1.4rem; }
+  .tp-line.past-2 .word { font-size: 1.8rem; }
+  .tp-line.past-1 .word { font-size: 2.2rem; }
+  .tp-line.present .word { font-size: 3.4rem; }
+  .tp-line.future-1 .word { font-size: 2.8rem; }
+  .tp-line.future-2 .word { font-size: 2.2rem; }
+  #timelineContainer { height: 22px; }
+  #hudFooter { min-height: 14vh; }
+}

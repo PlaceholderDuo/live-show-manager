@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.liveshowmanager.bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>server.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/rdfx1/Library/Application Support/REAPER/Scripts/Live Show Manager/web</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/rdfx1/Library/Application Support/REAPER/Scripts/Live Show Manager/web/logs/server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/rdfx1/Library/Application Support/REAPER/Scripts/Live Show Manager/web/logs/server-error.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

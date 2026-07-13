@@ -1,0 +1,962 @@
+/* Live Show Manager — Shared Styles
+   ============================================
+   Dark performance theme. Two layouts:
+     1. controller — iPhone 7 in landscape mode (touch controls)
+     2. stage-display — secondary monitor / teleprompter (read-only)
+
+   DESIGN PRINCIPLES:
+   - All black/dark backgrounds (stage-friendly, no light bleed)
+   - Minimum 48px touch targets on iPhone (Apple HIG)
+   - Color-coded states: green=active, yellow=warning, red=danger/panic, blue=info
+   - CSS variables for easy re-theming (change colors at :root)
+   - Safe area insets for iPhone notch
+   - No hover-dependent states (touch devices)
+
+   TROUBLESHOOTING:
+   - If iPhone layout breaks: check safe-area-inset support
+   - If colors look wrong: check --accent-* variables in :root
+   - If transport buttons are too small: increase --touch-min
+   - If stage display text is too small: increase .stage-song-title font-size
+*/
+
+/* ═══════════════════════════════════════════════════════════
+   RESET + THEME VARIABLES
+   ═══════════════════════════════════════════════════════════
+   Change these CSS variables to customize the entire theme.
+   All other rules reference these variables. */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary: #0d0d0d;        /* Main background (near-black) */
+  --bg-secondary: #1a1a1a;      /* Cards, panels, secondary surfaces */
+  --bg-card: #242424;           /* Elevated cards */
+  --text-primary: #f0f0f0;      /* Main text (near-white) */
+  --text-secondary: #888;       /* Secondary text, labels */
+  --accent-green: #2ecc71;      /* Active, playing, connected */
+  --accent-yellow: #f1c40f;     /* Warning, approaching clip, overdub */
+  --accent-red: #e74c3c;        /* Danger, recording, clipping, panic */
+  --accent-blue: #3498db;       /* Info, FX headers, links */
+  --accent-orange: #e67e22;     /* Multiply mode, alerts */
+  --accent-purple: #9b59b6;     /* Synth tab highlights */
+  --border-color: #333;         /* Subtle borders */
+  --font-mono: "SF Mono", "Menlo", "Courier New", monospace;
+  --font-sans: -apple-system, "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
+  --touch-min: 48px;            /* Minimum touch target size (Apple HIG) */
+  --radius: 12px;               /* Border radius for cards/buttons */
+}
+
+/* Base reset for both layouts */
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;              /* No scrolling — all content scrolls internally */
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;     /* Prevent text selection on touch */
+  user-select: none;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   IPHONE CONTROLLER LAYOUT (class="controller")
+   ═══════════════════════════════════════════════════════════
+   Flexbox column: content fills remaining space, tab bar + knob labels
+   are pinned to bottom. safe-area-inset handles iPhone notch/home indicator. */
+body.controller {
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: var(--bg-primary);
+}
+
+/* ── Tab Content Container ──
+   Only one tab-content is visible at a time (via .active class).
+   Each tab-content fills the available space between header and tab bar. */
+.tab-content {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  overflow-y: auto;              /* Scrollable if content exceeds screen */
+  padding: 8px 12px;
+}
+.tab-content.active {
+  display: flex;
+}
+
+.tab-header {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SHOW TAB — Song info, progress, transport
+   ═══════════════════════════════════════════════════════════ */
+
+/* Song Header */
+#songHeader {
+  padding: 12px 16px 8px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.pos-text {
+  font-size: 14px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  margin-bottom: 4px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.pos-text:active {
+  opacity: 0.6;
+}
+
+.song-title {
+  font-size: 28px;              /* Large enough to read at a glance */
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;       /* Truncate long song names with ... */
+}
+
+.song-meta {
+  font-size: 16px;
+  color: var(--accent-green);
+  font-family: var(--font-mono);
+  margin-top: 4px;
+}
+
+.song-notes {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mini teleprompter — lyric preview on phone controller Show tab */
+.mini-tele {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--bg-card);
+  border-radius: 6px;
+  border-left: 3px solid var(--accent-green);
+  min-height: 20px;
+  opacity: 0.9;
+}
+.mini-tele #miniLyricCurrent {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.mini-tele #miniLyricNext {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  opacity: 0.7;
+  line-height: 1.2;
+}
+
+/* Progress bar — green fill expands as song plays */
+#progressContainer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  flex-shrink: 0;
+}
+
+#progressBar {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-card);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+#progressFill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent-green);
+  border-radius: 4px;
+  transition: width 0.3s ease;   /* Smooth progress animation */
+}
+
+#progressTime, #remainingTime {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  min-width: 40px;
+}
+
+#remainingTime {
+  text-align: right;
+}
+
+/* Transport controls — large touch targets for live tapping */
+#transport {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px;
+  flex-shrink: 0;
+}
+
+/* Base button style — shared by ALL buttons across all tabs */
+.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 24px;
+  min-width: var(--touch-min);
+  min-height: var(--touch-min);
+  padding: 12px 20px;
+  cursor: pointer;
+  transition: transform 0.1s, opacity 0.1s;
+  -webkit-tap-highlight-color: transparent;  /* Remove iOS tap highlight */
+}
+
+.btn:active {
+  transform: scale(0.92);        /* Tactile feedback on press */
+  opacity: 0.8;
+}
+
+/* Button color variants */
+.btn-primary {
+  background: var(--accent-green);
+  color: #000;
+}
+
+.btn-secondary {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btn-danger {
+  background: var(--accent-red);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
+
+.btn-large {
+  min-width: 72px;
+  min-height: 72px;
+  font-size: 32px;
+  border-radius: 50%;            /* Circular play button */
+}
+
+.btn-small {
+  font-size: 14px;
+  padding: 6px 12px;
+  min-height: 36px;
+}
+
+.btn-tiny {
+  font-size: 14px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+/* Panic button — red, prominent, hard to miss */
+#btnPanic {
+  margin: 8px 16px;
+  flex-shrink: 0;
+  font-size: 18px;
+  padding: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   FX TAB — Track list + parameter drill-down
+   ═══════════════════════════════════════════════════════════
+   Two-level navigation:
+     1. Track list: shows all tracks with their FX as chips
+     2. FX param view: shows up to 8 parameters in a 2×4 grid */
+.fx-track-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.fx-track-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--accent-blue);
+}
+
+.fx-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fx-chip {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.fx-chip:active {
+  background: var(--accent-blue);
+  color: #000;
+}
+
+.fx-param-view {
+  flex: 1;
+}
+
+.fx-param-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent-blue);
+  margin: 8px 0;
+  text-align: center;
+}
+
+.fx-knob-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;  /* 2 columns × up to 4 rows */
+  gap: 10px;
+}
+
+.fx-param-slot {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 10px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.fx-param-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-param-bar {
+  height: 4px;
+  background: var(--bg-secondary);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.fx-param-fill {
+  height: 100%;
+  background: var(--accent-blue);
+  border-radius: 2px;
+}
+
+.fx-param-val {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MIX TAB — Vertical channel faders
+   ═══════════════════════════════════════════════════════════
+   Each channel is a vertical bar. Height = volume level.
+   Color: green (<70%), yellow (70-85%), red (>85% = clipping). */
+.mix-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;              /* Horizontal scroll for many channels */
+  flex: 1;
+  padding-bottom: 8px;
+}
+
+.mix-channel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 56px;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 8px 4px;
+}
+
+.mix-name {
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.mix-fader-bg {
+  flex: 1;
+  width: 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;     /* Fill from bottom up */
+  overflow: hidden;
+}
+
+.mix-fader-fill {
+  width: 100%;
+  border-radius: 4px;
+  transition: height 0.15s;      /* Smooth level changes */
+}
+
+.mix-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.mix-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 14px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MOBIUS TAB — LoopyPro-inspired loop cards
+   ═══════════════════════════════════════════════════════════
+   Each card shows:
+   - SVG circular progress ring (fills as loop cycles)
+   - Status label + beat length
+   - Color-coded left border (red=rec, green=play, yellow=overdub, orange=multiply)
+   - Action buttons row */
+.mobius-loop-grid {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.mobius-empty {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 40px 0;
+  font-size: 15px;
+}
+
+.loop-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  border-left: 4px solid var(--text-secondary);  /* Color changes by state */
+}
+
+.loop-card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* SVG Progress Ring — circumference = 2πr, r=32, offset based on progress (0-1) */
+.loop-ring {
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+}
+
+.loop-ring-bg {
+  fill: none;
+  stroke: var(--bg-secondary);
+  stroke-width: 4;
+}
+
+.loop-ring-fg {
+  fill: none;
+  stroke: var(--accent-green);
+  stroke-width: 4;
+  stroke-linecap: round;
+  transform: rotate(-90deg);      /* Start from top (12 o'clock) */
+  transform-origin: 40px 40px;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.loop-ring-label {
+  font-size: 18px;
+  font-weight: 700;
+  fill: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+/* Loop info text */
+.loop-card-info {
+  flex: 1;
+}
+
+.loop-card-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.loop-card-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 1px;
+}
+
+.loop-card-length {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.loop-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
+}
+
+.loop-btn {
+  flex: 1;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 16px;
+  padding: 6px 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  text-align: center;
+}
+
+.loop-btn:active {
+  opacity: 0.7;
+  transform: scale(0.95);
+}
+
+/* Loop state colors — border + ring + status label change per state */
+.loop-idle { border-left-color: var(--text-secondary); }
+.loop-idle .loop-ring-fg { stroke: var(--text-secondary); }
+.loop-idle .loop-ring-label { fill: var(--text-secondary); }
+
+.loop-recording { border-left-color: var(--accent-red); }
+.loop-recording .loop-ring-fg { stroke: var(--accent-red); }
+.loop-recording .loop-ring-label { fill: var(--accent-red); }
+
+.loop-playing { border-left-color: var(--accent-green); }
+.loop-playing .loop-ring-fg { stroke: var(--accent-green); }
+
+.loop-overdub { border-left-color: var(--accent-yellow); }
+.loop-overdub .loop-ring-fg { stroke: var(--accent-yellow); }
+.loop-overdub .loop-ring-label { fill: var(--accent-yellow); }
+
+.loop-multiply { border-left-color: var(--accent-orange); }
+.loop-multiply .loop-ring-fg { stroke: var(--accent-orange); }
+.loop-multiply .loop-ring-label { fill: var(--accent-orange); }
+
+.loop-muted { border-left-color: #555; opacity: 0.5; }
+.loop-muted .loop-ring-fg { stroke: #555; }
+
+.tab-header-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SYNTHS TAB — Synth track cards
+   ═══════════════════════════════════════════════════════════ */
+.synth-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.synth-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 12px;
+  cursor: pointer;
+}
+
+.synth-card:active {
+  background: var(--accent-purple);
+}
+
+.synth-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.synth-preset {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   STATS TAB — Connection health + debug info
+   ═══════════════════════════════════════════════════════════ */
+.stats-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px;
+  background: var(--bg-card);
+  border-radius: 6px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-value {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TAB BAR (always visible, pinned above knob labels)
+   ═══════════════════════════════════════════════════════════ */
+#tabBar {
+  display: flex;
+  gap: 4px;
+  padding: 8px 8px 4px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tab {
+  flex: 1;
+  padding: 8px 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-bottom: 3px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.tab.active {
+  color: var(--accent-green);
+  border-bottom-color: var(--accent-green);  /* Green underline = active tab */
+}
+
+/* ═══════════════════════════════════════════════════════════
+   KNOCK LABELS (always visible at very bottom)
+   ═══════════════════════════════════════════════════════════
+   4 color-coded labels that sit above the Alesis V25's physical knobs.
+   Colors: red, teal, yellow, green — one per knob.
+   Labels change based on active tab + context (e.g., FX params). */
+#knobLabels {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px env(safe-area-inset-bottom);
+  flex-shrink: 0;
+  margin-top: auto;              /* Push to bottom of flex container */
+}
+
+.knob-slot {
+  flex: 1;
+  text-align: center;
+  padding: 6px 4px;
+  border-radius: 6px;
+  background: var(--bg-card);
+  border-left: 3px solid var(--knob-color);  /* Color set by inline style */
+}
+
+.knob-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   STAGE DISPLAY LAYOUT (class="stage-display")
+   ═══════════════════════════════════════════════════════════
+   Three-column layout for secondary monitor / teleprompter:
+     Left  (120px)  — Channel level meters
+     Center (flex)  — Song title + lyrics/notes
+     Right (160px)  — Loop state indicators
+     Bottom (fixed) — Status bar (song pos, countdown, connection) */
+body.stage-display {
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  color: #fff;
+}
+
+#stageGrid {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Left column: Channel level meters ── */
+#channelStrip {
+  width: 120px;
+  background: var(--bg-secondary);
+  padding: 12px 8px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.level-meter {
+  margin-bottom: 8px;
+}
+
+.level-label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.level-bar-bg {
+  height: 6px;
+  background: #1a1a1a;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.level-bar-fill {
+  height: 100%;
+  background: var(--accent-green);
+  border-radius: 3px;
+  transition: width 0.1s;        /* Fast level response */
+}
+
+/* ── Center column: Song title + lyrics ── */
+#lyricsArea {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 40px;
+  text-align: center;
+}
+
+.stage-song-title {
+  font-size: 48px;               /* Large enough for stage visibility */
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.stage-song-meta {
+  font-size: 24px;
+  color: var(--accent-green);
+  font-family: var(--font-mono);
+  margin-bottom: 24px;
+}
+
+.stage-lyrics {
+  font-size: 28px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  max-width: 80%;
+}
+
+/* ── Right column: Loop state panel ── */
+#loopPanel {
+  width: 160px;
+  background: var(--bg-secondary);
+  padding: 12px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.panel-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+}
+
+.loop-state {
+  padding: 8px;
+  margin-bottom: 6px;
+  border-radius: 6px;
+  background: #1a1a1a;
+  font-size: 11px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.loop-track { font-weight: 600; }
+.loop-status { color: var(--text-secondary); }
+
+/* Loop state colors (stage display — simpler version of iPhone cards) */
+.loop-idle { border-left: 3px solid var(--text-secondary); }
+.loop-recording { border-left: 3px solid var(--accent-red); }
+.loop-playing { border-left: 3px solid var(--accent-green); }
+.loop-overdub { border-left: 3px solid var(--accent-yellow); }
+.loop-multiply { border-left: 3px solid var(--accent-orange); }
+
+/* ── Footer status bar ── */
+#stageFooter {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 8px 16px;
+  background: #111;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  border-top: 1px solid #1a1a1a;
+}
+
+#stageFooter > span {
+  flex: 1;
+}
+
+.status-dot {
+  text-align: right;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SONG LIST OVERLAY — tap position to show all songs
+   ═══════════════════════════════════════════════════════════
+   Full-screen overlay that lists every song in the setlist.
+   Current song is highlighted with green accent.
+   Tap any song to jump directly to it (sends jumpToSong action). */
+.song-list-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.95);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.song-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.song-list-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.song-list-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.song-list-item:active {
+  background: var(--bg-card);
+}
+
+.song-list-current {
+  border-left: 3px solid var(--accent-green);
+  background: rgba(46, 204, 113, 0.08);
+}
+
+.song-list-idx {
+  font-size: 14px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  min-width: 28px;
+}
+
+.song-list-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.song-list-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.song-list-artist {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.song-list-meta {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--accent-green);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   UTILITY CLASSES
+   ═══════════════════════════════════════════════════════════ */
+.hidden { display: none !important; }

@@ -1,0 +1,494 @@
+/* Live Stage HUD — Stage Display Styles (Balanced Teleprompter)
+   ==============================================================
+   All info stays on screen. Lyrics are the hero.
+   22" LCD in wedge or dev MacBook — both must work. */
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  font-family: -apple-system, "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.hud {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #000;
+}
+
+/* ── Edge flash ── */
+#edgeFlashTop, #edgeFlashBottom {
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 0;
+  z-index: 100;
+  pointer-events: none;
+  transition: height 0s, opacity 0.3s;
+  opacity: 0;
+}
+
+#edgeFlashTop {
+  top: 0;
+  background: linear-gradient(to bottom, rgba(255,255,255,0.25), transparent);
+}
+
+#edgeFlashBottom {
+  bottom: 0;
+  background: linear-gradient(to top, rgba(255,255,255,0.25), transparent);
+}
+
+.edge-flash-active {
+  height: 8% !important;
+  opacity: 1 !important;
+  transition: height 0s, opacity 0.05s;
+}
+
+#hudGrid {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 0 24px;
+  min-height: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   HEADER — Song title, artist, key/bpm badges
+   ═══════════════════════════════════════════════════════════ */
+#hudHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 12px 0 6px;
+  flex: 0 0 auto;
+  min-height: 9vh;
+  border-bottom: 1px solid #1a1a1a;
+  gap: 12px;
+}
+
+#headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+#hudTitle {
+  font-size: 48px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#hudArtist {
+  font-size: 22px;
+  font-weight: 400;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#headerRight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 5px;
+  font-size: 18px;
+  font-family: "SF Mono", Menlo, monospace;
+  font-weight: 600;
+  background: #1a1a1a;
+  color: #2ecc71;
+  white-space: nowrap;
+}
+
+.badge.dim {
+  color: #555;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SECTION BAR — Pills show song structure
+   ═══════════════════════════════════════════════════════════ */
+#hudSections {
+  flex: 0 0 auto;
+  padding: 5px 0;
+  min-height: 4.5vh;
+  display: flex;
+  align-items: center;
+}
+
+#sectionBar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  width: 100%;
+  padding: 2px 0;
+}
+
+.section-pill {
+  flex-shrink: 0;
+  padding: 3px 14px;
+  border-radius: 16px;
+  font-size: 16px;
+  font-weight: 700;
+  border: 2px solid #2a2a2a;
+  color: #555;
+  background: transparent;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+.section-pill.current {
+  background: #2ecc71;
+  border-color: #2ecc71;
+  color: #000;
+}
+
+.section-pill.past {
+  border-color: #222;
+  color: #2a2a2a;
+  background: transparent;
+}
+
+.section-pill.future {
+  border-color: #2a2a2a;
+  color: #444;
+}
+
+.section-pill.upcoming {
+  border-color: #2ecc71;
+  color: #2ecc71;
+  animation: pill-glow 1s ease-in-out infinite alternate;
+}
+
+@keyframes pill-glow {
+  from { box-shadow: 0 0 3px rgba(46, 204, 113, 0.2); }
+  to   { box-shadow: 0 0 12px rgba(46, 204, 113, 0.5); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LYRICS AREA — Teleprompter window, 8-10 lines, scrolls
+   ═══════════════════════════════════════════════════════════ */
+#hudLyrics {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px 0;
+}
+
+#lyricsContent {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+#lyricsScroll {
+  position: absolute;
+  left: 0;
+  right: 0;
+  will-change: transform;
+  transition: transform 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* ── Teleprompter line ── */
+.tp-line {
+  display: block;
+  text-align: center;
+  padding: 4px 0;
+  transition: opacity 0.3s;
+  line-height: 1.3;
+}
+
+.tp-line .chord-line {
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: pre-wrap;
+  min-height: 1.2em;
+  letter-spacing: 1px;
+}
+
+.tp-line .lyric-line {
+  font-size: 40px;
+  font-weight: 400;
+  color: #fff;
+  line-height: 1.3;
+  white-space: pre-wrap;
+}
+
+/* Chord spans */
+.tp-line .chord-span {
+  display: inline;
+  padding: 0 2px;
+  text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 0 2px #000;
+}
+
+.tp-line .chord-span[data-root="C"]  { color: #ff3333; }
+.tp-line .chord-span[data-root="C#"] { color: #ff6b35; }
+.tp-line .chord-span[data-root="Db"] { color: #ff6b35; }
+.tp-line .chord-span[data-root="D"]  { color: #ff8800; }
+.tp-line .chord-span[data-root="D#"] { color: #ffaa00; }
+.tp-line .chord-span[data-root="Eb"] { color: #ffaa00; }
+.tp-line .chord-span[data-root="E"]  { color: #ffdd00; }
+.tp-line .chord-span[data-root="F"]  { color: #33cc66; }
+.tp-line .chord-span[data-root="F#"] { color: #1abc9c; }
+.tp-line .chord-span[data-root="Gb"] { color: #1abc9c; }
+.tp-line .chord-span[data-root="G"]  { color: #3399ff; }
+.tp-line .chord-span[data-root="G#"] { color: #5b6abf; }
+.tp-line .chord-span[data-root="Ab"] { color: #5b6abf; }
+.tp-line .chord-span[data-root="A"]  { color: #9933ff; }
+.tp-line .chord-span[data-root="A#"] { color: #cc33ff; }
+.tp-line .chord-span[data-root="Bb"] { color: #cc33ff; }
+.tp-line .chord-span[data-root="B"]  { color: #ff3399; }
+.tp-line .chord-span[data-root="H"]  { color: #3399ff; }
+
+/* Section labels within teleprompter */
+.tp-section-label {
+  display: block;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #555;
+  padding: 8px 0 4px;
+  border-bottom: 1px solid #1a1a1a;
+  margin-bottom: 4px;
+}
+
+/* Opacity states for scroll distance */
+.tp-line                    { opacity: 0.20; }
+.tp-line.adjacent           { opacity: 0.45; }
+.tp-line.near               { opacity: 0.70; }
+.tp-line.current            { opacity: 1.0; }
+
+/* ── Waiting / empty state ── */
+.waiting {
+  font-size: 48px;
+  font-weight: 300;
+  color: #333;
+  text-align: center;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 40%;
+}
+
+/* ── Performance notes ── */
+#hudNotes {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 18px;
+  color: #666;
+  opacity: 0;
+  transition: opacity 0.5s;
+  padding: 4px 0;
+  pointer-events: none;
+}
+#hudNotes.visible { opacity: 1; }
+
+/* ═══════════════════════════════════════════════════════════
+   FOOTER — Ring, progress bar, next song, meters, status
+   ═══════════════════════════════════════════════════════════ */
+#hudFooter {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 8px 0 12px;
+  min-height: 28vh;
+  border-top: 1px solid #1a1a1a;
+}
+
+/* ── Left: Countdown ring ── */
+#footerLeft {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#countdownRing {
+  width: 170px;
+  height: 170px;
+  filter: drop-shadow(0 0 8px rgba(46, 204, 113, 0.15));
+}
+
+#ringBg     { stroke: #111; }
+#ringTrack  { stroke: #222; }
+
+#ringProgress {
+  transition: stroke-dashoffset 0.3s ease, stroke 0.5s;
+}
+
+.ring-green  #ringProgress { stroke: #2ecc71; }
+.ring-yellow #ringProgress { stroke: #f1c40f; }
+.ring-yellow #countdownRing { filter: drop-shadow(0 0 12px rgba(241, 196, 15, 0.3)); }
+.ring-red    #ringProgress { stroke: #e74c3c; }
+.ring-red    #countdownRing { filter: drop-shadow(0 0 16px rgba(231, 76, 60, 0.4)); }
+.ring-red.pulse #countdownRing {
+  animation: ring-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes ring-pulse {
+  from { filter: drop-shadow(0 0 8px rgba(231, 76, 60, 0.3)); transform: scale(1); }
+  to   { filter: drop-shadow(0 0 24px rgba(231, 76, 60, 0.6)); transform: scale(1.03); }
+}
+
+#ringTicks line {
+  stroke: #444;
+  stroke-width: 2;
+}
+#ringTicks line.section-start {
+  stroke: #777;
+  stroke-width: 3;
+}
+
+/* ── Center: Progress + next song ── */
+#footerCenter {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+#progressContainer {
+  width: 100%;
+  height: 10px;
+  background: #1a1a1a;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+#progressFill {
+  height: 100%;
+  width: 0%;
+  background: #2ecc71;
+  border-radius: 5px;
+  transition: width 0.3s ease;
+}
+
+#footerTimeRow {
+  display: flex;
+  justify-content: space-between;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 20px;
+  color: #666;
+}
+
+#footerNext {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 24px;
+}
+
+#nextLabel {
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+#nextSong {
+  font-weight: 700;
+  color: #2ecc71;
+}
+
+#footerMeters { margin-top: 2px; }
+
+.meter-row {
+  display: flex;
+  gap: 4px;
+}
+
+.meter-strip {
+  flex: 1;
+  height: 5px;
+  background: #1a1a1a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.15s;
+  background: #2ecc71;
+}
+.meter-fill.warn { background: #f1c40f; }
+.meter-fill.clip { background: #e74c3c; }
+
+/* ── Right: Status ── */
+#footerRight {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 150px;
+}
+
+#footerStatus {
+  font-size: 16px;
+  font-family: "SF Mono", Menlo, monospace;
+}
+
+.status-dot.connected    { color: #2ecc71; }
+.status-dot.disconnected { color: #e74c3c; }
+
+#footerSection {
+  font-size: 16px;
+  color: #555;
+  font-family: "SF Mono", Menlo, monospace;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   RESPONSIVE
+   ═══════════════════════════════════════════════════════════ */
+@media (max-height: 700px) {
+  #hudTitle { font-size: 34px; }
+  #hudArtist { font-size: 18px; }
+  .badge { font-size: 14px; padding: 2px 8px; }
+  .section-pill { font-size: 13px; padding: 2px 10px; }
+  .tp-line .chord-line { font-size: 28px; }
+  .tp-line .lyric-line { font-size: 30px; }
+  #countdownRing { width: 130px; height: 130px; }
+  #footerNext { font-size: 18px; }
+  #hudFooter { min-height: 24vh; }
+}
+
+@media (max-width: 800px) {
+  #hudTitle { font-size: 34px; }
+  #hudArtist { font-size: 18px; }
+  .badge { font-size: 14px; }
+  .section-pill { font-size: 14px; }
+  .tp-line .chord-line { font-size: 28px; }
+  .tp-line .lyric-line { font-size: 30px; }
+  #countdownRing { width: 140px; height: 140px; }
+}

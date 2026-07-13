@@ -1,0 +1,14 @@
+{
+  "currentSong": "Wild Horses",
+  "songId": "wild_horses",
+  "currentKey": "G",
+  "currentArtist": "The Rolling Stones",
+  "bpm": 120,
+  "position": 47.5,
+  "duration": 62,
+  "nextSong": "Wild Wild West",
+  "playing": true,
+  "connected": true,
+  "songIndex": 297,
+  "totalSongs": 327
+}

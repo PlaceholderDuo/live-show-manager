@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<!--
+Live Show Manager — iPhone Controller (index.html)
+====================================================
+Opened on the iPhone in Safari. "Add to Home Screen" for fullscreen/kiosk mode.
+
+LAYOUT (landscape, top→bottom):
+  [Tab Content Area] ← 1 of 6 tabs shown at a time
+  [Tab Bar]          ← Switch between Show / FX / Mix / Loops / Synths / Stats
+  [Knob Labels]      ← 4 color-coded labels for Alesis V25 physical knobs
+
+TABS:
+  Show   — Current song, progress bar, transport (play/stop/prev/next), PANIC
+  FX     — Per-track FX list. Tap FX → see 8 parameter bars. Knob labels = top 4 params.
+  Mix    — Vertical faders per track. Green/yellow/red. Mute/solo buttons.
+  Loops  — LoopyPro-style loop cards. SVG progress ring. Record/Play/Overdub/Multiply/Mute.
+  Synths — Synth track cards with current preset. Tap to change.
+  Stats  — Connection status, show name, position, BPM.
+
+DATA FLOW:
+  REAPER → Lua Runner → bridge_state.json → Server → WebSocket → This page
+
+TROUBLESHOOTING:
+  - "No Show Loaded"  → Lua runner not running (click LAUNCH PERFORMANCE in REAPER)
+  - Transport unresponsive → REAPER OSC control surface not configured
+  - Page not loading → Server not running (start with: node server.js)
+  - Knob labels wrong → Tab-specific knob context loaded from KNOB_LABELS map
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Live Show — Control</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="controller">
+
+  <!-- ============================================================ -->
+  <!-- TAB: SHOW                                                    -->
+  <!-- Current song info, progress, transport controls, panic button -->
+  <!-- ============================================================ -->
+  <section id="tab-show" class="tab-content active">
+    <header id="songHeader">
+      <div id="songPosition" class="pos-text" onclick="toggleSongList()">☰ <span id="posText">-- / --</span></div>
+      <div id="songTitle" class="song-title">No Show Loaded</div>
+      <div id="songMeta" class="song-meta"></div>
+      <div id="songNotes" class="song-notes"></div>
+      <div id="miniTeleprompter" class="mini-tele">
+        <div id="miniLyricCurrent"></div>
+        <div id="miniLyricNext"></div>
+      </div>
+    </header>
+    <div id="songListOverlay" class="song-list-overlay hidden">
+      <div id="songListHeader" class="song-list-header">SONGS <button class="btn btn-tiny" onclick="toggleSongList()">✕</button></div>
+      <div id="songListBody" class="song-list-body"></div>
+    </div>
+    <div id="progressContainer">
+      <span id="progressTime">0:00</span>
+      <div id="progressBar"><div id="progressFill"></div></div>
+      <span id="remainingTime">0:00</span>
+    </div>
+    <section id="transport">
+      <button id="btnPrev" class="btn btn-secondary" onclick="sendAction('prev')">⏮ Prev</button>
+      <button id="btnPlay" class="btn btn-primary btn-large" onclick="sendAction('play')">▶ Play</button>
+      <button id="btnStop" class="btn btn-secondary" onclick="sendAction('stop')">⏹ Stop</button>
+      <button id="btnNext" class="btn btn-secondary" onclick="sendAction('next')">⏭ Next</button>
+    </section>
+    <button id="btnPanic" class="btn btn-danger" onclick="sendAction('panic')">PANIC</button>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- TAB: FX                                                     -->
+  <!-- Lists REAPER tracks → tap → expand FX parameters on knobs    -->
+  <!-- ============================================================ -->
+  <section id="tab-fx" class="tab-content">
+    <div class="tab-header">EFFECTS</div>
+    <div id="fxTrackList" class="fx-track-list">
+      <!-- Populated dynamically from fxData WebSocket event -->
+    </div>
+    <div id="fxParamView" class="fx-param-view hidden">
+      <button id="fxBackBtn" class="btn btn-secondary btn-small" onclick="fxBack()">← Back to Tracks</button>
+      <div id="fxParamKnobs" class="fx-knob-grid">
+        <!-- Populated dynamically when user taps an FX chip -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- TAB: MIX                                                    -->
+  <!-- Vertical fader strips per track with mute/solo               -->
+  <!-- ============================================================ -->
+  <section id="tab-mix" class="tab-content">
+    <div class="tab-header">MIXER</div>
+    <div id="mixStrip" class="mix-strip">
+      <!-- Populated dynamically from trackLevels WebSocket event -->
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- TAB: LOOPS (LoopyPro-inspired)                              -->
+  <!-- SVG progress rings + state + action buttons per loop track   -->
+  <!-- ============================================================ -->
+  <section id="tab-mobius" class="tab-content">
+    <div class="tab-header">
+      <span>LOOPS</span>
+      <span class="tab-header-actions">
+        <button class="btn btn-tiny" onclick="sendAction('mobiusAllReset')" title="Reset All">⎚ ALL RESET</button>
+        <button class="btn btn-tiny" onclick="sendAction('mobiusAllUndo')" title="Undo All">↩ ALL UNDO</button>
+      </span>
+    </div>
+    <div id="mobiusLoops" class="mobius-loop-grid">
+      <!-- Populated dynamically from loopState WebSocket event -->
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- TAB: SYNTHS                                                 -->
+  <!-- Synth track cards with current preset — tap to select        -->
+  <!-- ============================================================ -->
+  <section id="tab-synths" class="tab-content">
+    <div class="tab-header">SYNTHS</div>
+    <div id="synthList" class="synth-list">
+      <!-- Populated dynamically from synthData WebSocket event -->
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- TAB: STATS                                                  -->
+  <!-- Connection health, show info, debug data                     -->
+  <!-- ============================================================ -->
+  <section id="tab-stats" class="tab-content">
+    <div class="tab-header">STATUS</div>
+    <div class="stats-grid">
+      <div class="stat-row"><span class="stat-label">Server</span><span id="statServer" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">WebSocket</span><span id="statWS" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">REAPER</span><span id="statReaper" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">Show</span><span id="statShow" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">Position</span><span id="statPosition" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">BPM</span><span id="statBPM" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">Uptime</span><span id="statUptime" class="stat-value">--</span></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- PERSISTENT UI (always visible at bottom of screen)           -->
+  <!-- ============================================================ -->
+
+  <!-- Tab navigation bar -->
+  <nav id="tabBar">
+    <button class="tab active" data-tab="show">Show</button>
+    <button class="tab" data-tab="fx">FX</button>
+    <button class="tab" data-tab="mix">Mix</button>
+    <button class="tab" data-tab="mobius">Loops</button>
+    <button class="tab" data-tab="synths">Synths</button>
+    <button class="tab" data-tab="stats">Stats</button>
+  </nav>
+
+  <!-- Alesis V25 Knob Labels (4 color-coded labels at very bottom)
+       These sit directly above the Alesis V25's 4 physical knobs
+       when the iPhone is docked horizontally in front of the controller.
+       Each tab defines what labels appear here (see KNOB_LABELS in JS). -->
+  <div id="knobLabels">
+    <div class="knob-slot" style="--knob-color: #ff6b6b;"><span class="knob-label" id="knob1l">--</span></div>
+    <div class="knob-slot" style="--knob-color: #4ecdc4;"><span class="knob-label" id="knob2l">--</span></div>
+    <div class="knob-slot" style="--knob-color: #ffe66d;"><span class="knob-label" id="knob3l">--</span></div>
+    <div class="knob-slot" style="--knob-color: #a8e6cf;"><span class="knob-label" id="knob4l">--</span></div>
+  </div>
+
+  <!-- Socket.IO is served by the Node.js server at /socket.io/socket.io.js
+       (not a separate install — it's auto-served by the socket.io npm package) -->
+  <script src="/socket.io.js"></script>
+  <script src="/client.js"></script>
+  <script>
+    // ═══════════════════════════════════════════════════════════════
+    // Connect to the WebSocket server (deferred — page renders first)
+    // ═══════════════════════════════════════════════════════════════
+
+    // ── Global state cache ──
+    let currentState = {};
+    let fxData = {};
+    let activeFxTrack = null;
+    let activeFxIndex = null;
+
+    // Show initial connecting state immediately (before socket connects)
+    document.getElementById("statWS").textContent = "🔄 Connecting...";
+    document.getElementById("statServer").textContent = "🔄 " + window.location.host;
+
+    // Defer Socket.IO init so page finishes loading even if handshake hangs
+    let socket;
+    setTimeout(() => {
+      socket = io({
+        transports: ["polling", "websocket"],  // Skip WebTransport — hangs on iOS 15
+        timeout: 10000,                        // Don't wait forever
+      });
+      drainActionQueue(socket);
+
+    // ═══════════════════════════════════════════════════════════════
+    // TAB SWITCHING
+    // ═══════════════════════════════════════════════════════════════
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        // Deactivate all tabs and content sections
+        document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+        document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("active"));
+
+        // Activate the clicked tab
+        tab.classList.add("active");
+        document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+
+        // Update the Alesis V25 knob labels to match the active tab
+        updateKnobLabelsForTab(tab.dataset.tab);
+
+        // Notify the server (future use: update MIDI CC mappings per tab)
+        socket.emit("tabChange", { tab: tab.dataset.tab });
+      });
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    // KNOCK CONTEXT SYSTEM (Alesis V25)
+    // ═══════════════════════════════════════════════════════════════
+    // Each tab defines what the 4 physical knobs do. The labels shown
+    // at the bottom of the iPhone screen correspond to each knob.
+    //
+    // When the FX tab is active and a specific FX is selected, these
+    // labels are overridden with that FX's top 4 parameter names.
+    //
+    // To add a new tab: add an entry here, then wire in updateKnobLabelsForTab.
+    const KNOB_LABELS = {
+      show:   ["--",      "--",       "--",     "--"],
+      fx:     ["Param 1", "Param 2", "Param 3", "Param 4"],
+      mix:    ["Vol 1",   "Vol 2",   "Vol 3",  "Vol 4"],
+      mobius: ["Record",  "Overdub", "Play",   "Stop"],
+      synths: ["Preset",  "Cutoff",  "Res",    "Level"],
+      stats:  ["--",      "--",      "--",     "--"]
+    };
+
+    function updateKnobLabelsForTab(tab) {
+      let labels = KNOB_LABELS[tab] || ["--","--","--","--"];
+      for (let i = 1; i <= 4; i++) {
+        const el = document.getElementById("knob" + i + "l");
+        if (el) el.textContent = labels[i - 1];
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // SHOW TAB — Real-time state updates
+    // ═══════════════════════════════════════════════════════════════
+    // Receives the merged state from the server every ~500ms.
+    // The server combines data from the Lua runner + REAPER OSC feedback.
+    socket.on("state", (s) => {
+      currentState = s;
+
+      // ── Song position in setlist ──
+      document.getElementById("posText").textContent =
+        s.songIndex > 0 ? s.songIndex + " / " + s.totalSongs : "-- / --";
+      currentState.regions = s.regions || [];
+
+      // ── Song title ──
+      document.getElementById("songTitle").textContent =
+        s.currentSong || "No Show Loaded";
+
+      // ── Metadata line (BPM | Key — Artist) ──
+      let meta = "";
+      if (s.bpm) meta += s.bpm + " BPM";
+      if (s.currentKey) meta += (meta ? "  |  " : "") + s.currentKey;
+      if (s.currentArtist) meta += (meta ? "  —  " : "") + s.currentArtist;
+      document.getElementById("songMeta").textContent = meta || "";
+
+      // ── Notes ──
+      document.getElementById("songNotes").textContent = s.notes || "";
+
+      // ── Mini teleprompter — current + next lyric line ──
+      updateMiniTeleprompter(s);
+
+      // ── Progress bar ──
+      const pct = s.duration > 0 ? (s.position / s.duration) * 100 : 0;
+      document.getElementById("progressFill").style.width = Math.min(pct, 100) + "%";
+      document.getElementById("progressTime").textContent = formatTime(s.position);
+      document.getElementById("remainingTime").textContent = "-" + formatTime(Math.max(0, s.duration - s.position));
+
+      // ── Play/Pause toggle button ──
+      document.getElementById("btnPlay").textContent = s.playing ? "⏸ Pause" : "▶ Play";
+
+      // ── Stats tab (always updated regardless of which tab is visible) ──
+      document.getElementById("statShow").textContent = s.showName || "--";
+      document.getElementById("statPosition").textContent = formatTime(s.position) + " / " + formatTime(s.duration);
+      document.getElementById("statBPM").textContent = s.bpm || "--";
+      document.getElementById("statReaper").textContent =
+        s.connected ? "🟢 Connected" : (s.playing ? "▶ Playing" : "⏹ Stopped");
+    });
+
+    function updateMiniTeleprompter(s) {
+      var lines = s.lyricLines;
+      var elCur = document.getElementById("miniLyricCurrent");
+      var elNext = document.getElementById("miniLyricNext");
+      var box = document.getElementById("miniTeleprompter");
+      if (!lines || !lines.length) {
+        box.style.display = "none";
+        return;
+      }
+      box.style.display = "";
+
+      var pct = Math.min(1, Math.max(0, (s.position || 0) / (s.duration || 1)));
+      var idx = Math.min(lines.length - 1, Math.floor(pct * lines.length));
+
+      var cur = lines[idx] || { text: "", type: "lyric" };
+      var nxt = lines[Math.min(idx + 1, lines.length - 1)] || { text: "", type: "lyric" };
+
+      elCur.textContent = cur.text || "";
+      elNext.textContent = (nxt.text && nxt.text !== cur.text) ? nxt.text : "";
+
+      if (cur.type === "solo") {
+        elCur.style.color = "#ffeb3b";
+        elCur.textContent = "(solo) " + elCur.textContent;
+      } else {
+        elCur.style.color = "";
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // FX TAB — Track list with FX drill-down
+    // ═══════════════════════════════════════════════════════════════
+    // Data comes from Lua runner which queries REAPER's TrackFX API.
+    // Structure: { tracks: [{ name: "Guitar", fx: [{ name: "Amp Sim", params: [...] }] }] }
+    socket.on("fxData", (data) => {
+      fxData = data || {};
+      renderFxTrackList();
+    });
+
+    function renderFxTrackList() {
+      const container = document.getElementById("fxTrackList");
+      const tracks = fxData.tracks || [];
+      container.innerHTML = "";
+      tracks.forEach((track, ti) => {
+        const card = document.createElement("div");
+        card.className = "fx-track-card";
+        card.innerHTML = '<div class="fx-track-name">' + (track.name || "Track " + (ti+1)) + '</div>';
+        const fxList = document.createElement("div");
+        fxList.className = "fx-list";
+        (track.fx || []).forEach((fx, fi) => {
+          const btn = document.createElement("button");
+          btn.className = "fx-chip";
+          btn.textContent = fx.name || "FX " + (fi+1);
+          btn.onclick = () => showFxParams(ti, fi);
+          fxList.appendChild(btn);
+        });
+        card.appendChild(fxList);
+        container.appendChild(card);
+      });
+    }
+
+    function showFxParams(trackIdx, fxIdx) {
+      // Switch from track list view to parameter view
+      activeFxTrack = trackIdx;
+      activeFxIndex = fxIdx;
+
+      // Notify server of FX selection for knob context routing
+      socket.emit("fxSelected", { trackIdx, fxIdx });
+      document.getElementById("fxTrackList").classList.add("hidden");
+      document.getElementById("fxParamView").classList.remove("hidden");
+
+      const track = (fxData.tracks || [])[trackIdx];
+      const fx = track && (track.fx || [])[fxIdx];
+      if (!fx) return;
+
+      // Build 8-slot parameter grid (2 columns × 4 rows)
+      const grid = document.getElementById("fxParamKnobs");
+      grid.innerHTML = '<div class="fx-param-title">' + (fx.name || "FX") + '</div>';
+      (fx.params || []).slice(0, 8).forEach((p, pi) => {
+        const slot = document.createElement("div");
+        slot.className = "fx-param-slot";
+        const val = Math.round((p.value || 0) * 100);
+        slot.innerHTML =
+          '<div class="fx-param-name">' + (p.name || "Param " + (pi+1)) + '</div>' +
+          '<div class="fx-param-bar"><div class="fx-param-fill" style="width:' + val + '%"></div></div>' +
+          '<div class="fx-param-val">' + val + '</div>';
+        // Tap to increment param value by 10% (simple demo — replace with knob control later)
+        slot.onclick = () => {
+          const newVal = Math.min(1, (p.value || 0) + 0.1);
+          socket.emit("fxParam", { trackIdx, fxIdx, paramIdx: pi, value: newVal });
+        };
+        grid.appendChild(slot);
+      });
+
+      // Update knob labels to show this FX's top 4 parameters
+      updateKnobLabelsForFx(fx);
+    }
+
+    function updateKnobLabelsForFx(fx) {
+      for (let i = 0; i < 4; i++) {
+        const p = (fx.params || [])[i];
+        const el = document.getElementById("knob" + (i+1) + "l");
+        if (el) el.textContent = p ? (p.name || "P" + (i+1)) : "--";
+      }
+    }
+
+    function fxBack() {
+      // Return from parameter drill-down to track list view
+      document.getElementById("fxTrackList").classList.remove("hidden");
+      document.getElementById("fxParamView").classList.add("hidden");
+      activeFxTrack = null;
+      activeFxIndex = null;
+      updateKnobLabelsForTab("fx");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MIX TAB — Vertical faders per channel
+    // ═══════════════════════════════════════════════════════════════
+    // Each track is a vertical bar. Height = volume level.
+    // Color: green (<70%), yellow (70-85%), red (>85% clipping).
+    // Mute/Solo buttons toggle via action WebSocket event.
+    socket.on("trackLevels", (levels) => {
+      const container = document.getElementById("mixStrip");
+      container.innerHTML = "";
+      (levels || []).forEach((t, i) => {
+        const strip = document.createElement("div");
+        strip.className = "mix-channel";
+        const pct = Math.min((t.level || 0) * 100, 100);
+        const color = pct > 85 ? "var(--accent-red)" : pct > 70 ? "var(--accent-yellow)" : "var(--accent-green)";
+        strip.innerHTML =
+          '<div class="mix-name">' + (t.name || "Ch " + (i+1)) + '</div>' +
+          '<div class="mix-fader-bg"><div class="mix-fader-fill" style="height:' + pct + '%;background:' + color + '"></div></div>' +
+          '<div class="mix-actions">' +
+            '<button class="mix-btn" onclick="socket.emit(\'action\',{type:\'mute\',value:' + i + '})">' + (t.mute ? '🔇' : '🔊') + '</button>' +
+            '<button class="mix-btn" onclick="socket.emit(\'action\',{type:\'solo\',value:' + i + '})">' + (t.solo ? 'S' : 's') + '</button>' +
+          '</div>';
+        container.appendChild(strip);
+      });
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    // MOBIUS/LOOPS TAB — LoopyPro-inspired loop cards
+    // ═══════════════════════════════════════════════════════════════
+    // Each loop card shows:
+    //   - SVG circular progress ring (fills as loop plays)
+    //   - Status label (Idle/Recording/Playing/Overdub/Multiply)
+    //   - Beat length
+    //   - Color-coded left border matching state
+    //   - Action buttons: Record, Play, Overdub, Multiply, Mute
+    //
+    // Color scheme:
+    //   Idle      → grey   (no loop recorded)
+    //   Recording → red    (actively recording)
+    //   Playing   → green  (loop is playing back)
+    //   Overdub   → yellow (overdubbing onto existing loop)
+    //   Multiply  → orange (loop multiply mode)
+    //   Muted     → dimmed
+    socket.on("loopState", (loops) => {
+      const container = document.getElementById("mobiusLoops");
+      container.innerHTML = "";
+      const entries = Object.entries(loops || {});
+      if (entries.length === 0) {
+        container.innerHTML = '<div class="mobius-empty">No loops active</div>';
+        return;
+      }
+      entries.forEach(([name, state]) => {
+        const card = document.createElement("div");
+        card.className = "loop-card loop-" + ((state.status || "idle").toLowerCase());
+
+        // SVG ring: circumference = 2πr (r=32), offset based on progress (0-1)
+        const progress = state.progress || 0;
+        const circ = 2 * Math.PI * 32;
+        const offset = circ - (progress * circ);
+        const beatsLabel = state.beats !== undefined ? state.beats + "b" : "";
+
+        card.innerHTML =
+          '<div class="loop-card-main">' +
+            '<svg class="loop-ring" viewBox="0 0 80 80">' +
+              '<circle cx="40" cy="40" r="32" class="loop-ring-bg"/>' +
+              '<circle cx="40" cy="40" r="32" class="loop-ring-fg" ' +
+                'style="stroke-dasharray:' + circ + ';stroke-dashoffset:' + offset + '"/>' +
+              '<text x="40" y="40" text-anchor="middle" dominant-baseline="central" class="loop-ring-label">' +
+                (state.status || "·").charAt(0).toUpperCase() +
+              '</text>' +
+            '</svg>' +
+            '<div class="loop-card-info">' +
+              '<div class="loop-card-name">' + name + '</div>' +
+              '<div class="loop-card-status">' + (state.status || "Idle") + '</div>' +
+              (beatsLabel ? '<div class="loop-card-length">' + beatsLabel + '</div>' : '') +
+            '</div>' +
+          '</div>' +
+          '<div class="loop-card-actions">' +
+            '<button class="loop-btn" onclick="sendAction(\'mobiusRecord\',\'' + name + '\')" title="Record">● REC</button>' +
+            '<button class="loop-btn" onclick="sendAction(\'mobiusPlay\',\'' + name + '\')" title="Play">▶ PLAY</button>' +
+            '<button class="loop-btn" onclick="sendAction(\'mobiusOverdub\',\'' + name + '\')" title="Overdub">◉ OVD</button>' +
+            '<button class="loop-btn" onclick="sendAction(\'mobiusMultiply\',\'' + name + '\')" title="Multiply">× MUL</button>' +
+            '<button class="loop-btn" onclick="sendAction(\'mobiusMute\',\'' + name + '\')" title="Mute">M MUTE</button>' +
+          '</div>';
+
+        container.appendChild(card);
+      });
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    // SYNTHS TAB — Synth track cards
+    // ═══════════════════════════════════════════════════════════════
+    // Shows each synth track name + currently loaded preset name.
+    // Tap a card to select it (future: opens preset browser).
+    socket.on("synthData", (data) => {
+      const container = document.getElementById("synthList");
+      container.innerHTML = "";
+      (data || []).forEach((synth, i) => {
+        const card = document.createElement("div");
+        card.className = "synth-card";
+        card.innerHTML =
+          '<div class="synth-name">' + (synth.name || "Synth " + (i+1)) + '</div>' +
+          '<div class="synth-preset">' + (synth.preset || "No preset") + '</div>';
+        card.onclick = () => {
+          socket.emit("action", { type: "synthSelect", value: i });
+        };
+        container.appendChild(card);
+      });
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    // CONNECTION STATUS (Stats tab)
+    // ═══════════════════════════════════════════════════════════════
+    // These handlers fire on the Socket.IO connection lifecycle.
+    // "Connected" = WebSocket link to server is alive.
+    // Server connection + REAPER connection are shown separately in Stats tab.
+    socket.on("connect", () => {
+      document.getElementById("statWS").textContent = "🟢 Connected";
+      document.getElementById("statServer").textContent = "🟢 " + window.location.host;
+    });
+
+      socket.on("disconnect", () => {
+        document.getElementById("statWS").textContent = "🔴 Disconnected";
+        document.getElementById("statServer").textContent = "🔴 " + window.location.host;
+      });
+
+      socket.on("connect_error", (err) => {
+        document.getElementById("statWS").textContent = "🔴 Failed: " + (err.message || "timeout");
+        document.getElementById("statServer").textContent = "🔴 " + window.location.host;
+      });
+
+      // ── Song list overlay (tap position to show) ──
+      function toggleSongList() {
+        const overlay = document.getElementById("songListOverlay");
+        if (overlay.classList.contains("hidden")) {
+          populateSongList();
+          overlay.classList.remove("hidden");
+        } else {
+          overlay.classList.add("hidden");
+        }
+      }
+
+      function populateSongList() {
+        const body = document.getElementById("songListBody");
+        body.innerHTML = "";
+        const regions = currentState.regions || [];
+        const currentIdx = currentState.songIndex || 0;
+        regions.forEach((r, i) => {
+          const idx = i + 1;
+          const item = document.createElement("div");
+          item.className = "song-list-item" + (idx === currentIdx ? " song-list-current" : "");
+          item.innerHTML =
+            '<span class="song-list-idx">' + idx + '</span>' +
+            '<span class="song-list-info">' +
+              '<span class="song-list-title">' + (r.title || "Song " + idx) + '</span>' +
+              (r.artist ? '<span class="song-list-artist">' + r.artist + '</span>' : '') +
+            '</span>' +
+            '<span class="song-list-meta">' +
+              (r.bpm ? r.bpm + ' BPM' : '') +
+              (r.key ? ' | ' + r.key : '') +
+            '</span>';
+          item.onclick = () => {
+            sendAction("jumpToSong", idx);
+            toggleSongList();
+          };
+          body.appendChild(item);
+        });
+      }
+
+      // ── Initialize knob labels to Show tab defaults ──
+      updateKnobLabelsForTab("show");
+    }, 0);  // End deferred socket init
+  </script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Guest Singer — Scan for Lyrics</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 2rem;
+  }
+  h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    text-align: center;
+  }
+  p.instruction {
+    font-size: 1.1rem;
+    color: #aaa;
+    margin-bottom: 2rem;
+    text-align: center;
+  }
+  #qr-container {
+    background: #fff;
+    padding: 1rem;
+    border-radius: 12px;
+    margin-bottom: 1.5rem;
+  }
+  #qr-code { display: block; }
+  .url-text {
+    font-size: 1.2rem;
+    color: #4fc3f7;
+    word-break: break-all;
+    text-align: center;
+    max-width: 360px;
+    margin-bottom: 0.5rem;
+  }
+  .note {
+    font-size: 0.85rem;
+    color: #666;
+    text-align: center;
+    max-width: 360px;
+    line-height: 1.4;
+  }
+</style>
+</head>
+<body>
+  <h1>Live Stage Lyrics</h1>
+  <p class="instruction">Scan the QR code with your phone camera</p>
+  <div id="qr-container">
+    <img id="qr-code" src="/assets/qr-hud.png" alt="QR Code" width="280" height="280">
+  </div>
+  <div id="qr-url" class="url-text">—</div>
+  <p class="note">You&rsquo;ll see the current song lyrics synced to the band.<br>No app needed — just your phone browser.</p>
+  <script>
+    (function() {
+      var img = document.getElementById("qr-code");
+      var urlEl = document.getElementById("qr-url");
+      var fallback = document.getElementById("qr-container");
+
+      // Extract URL from QR image name (set by tunnel script)
+      // Try to fetch current tunnel URL from a known endpoint
+      function updateUrl() {
+        var src = img.src || "";
+        urlEl.textContent = "Loading...";
+        // If QR image loaded, extract from data or just show generic text
+        urlEl.textContent = "Scan for live synced lyrics";
+      }
+
+      img.onload = updateUrl;
+      img.onerror = function() {
+        fallback.innerHTML = '<div style="background:#222;color:#fff;padding:2rem;border-radius:12px;text-align:center;font-size:1.2rem;">No QR code yet.<br>Tunnel not started.</div>';
+        urlEl.textContent = "Run tunnel.sh on the server";
+      };
+      updateUrl();
+    })();
+  </script>
+</body>
+</html>
