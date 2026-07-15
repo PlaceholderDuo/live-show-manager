@@ -251,6 +251,7 @@ try {
 
   midiIn.on("noteon", (msg) => {
     if (msg.velocity > 0) {
+      console.log("[Tuner] NOTEON:", noteName(msg.note), "midi=" + msg.note);
       tunerCurrentNote = msg.note;
       const freq = 440 * Math.pow(2, (msg.note - 69) / 12);
       emitTuner(noteName(msg.note), 0, freq, detectString(msg.note));
@@ -258,6 +259,7 @@ try {
   });
 
   midiIn.on("pitch", (msg) => {
+    console.log("[Tuner] PITCH BEND: value=" + msg.value + " (center=8192)");
     if (tunerCurrentNote == null) return;
     const cents = ((msg.value - 8192) / 8192) * 200;
     const freq = 440 * Math.pow(2, (tunerCurrentNote - 69 + cents / 100) / 12);
