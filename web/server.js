@@ -1063,7 +1063,10 @@ function pollLuaState() {
         state.totalSongs = luaState.totalSongs !== undefined ? luaState.totalSongs : state.totalSongs;
         state.bpm = luaState.bpm || state.bpm;
         state.notes = luaState.notes || state.notes;
-        state.duration = luaState.duration || state.duration;
+        // Only use bridge duration if it changed (new song), preserve computed value
+        if (luaState.songId && luaState.songId !== state._lastDurationSongId) {
+          if (luaState.duration && luaState.duration > 0) state.duration = luaState.duration;
+        }
         state.currentKey = luaState.currentKey || state.currentKey;
         state.currentArtist = luaState.currentArtist || state.currentArtist;
         state.trackLevels = luaState.trackLevels || state.trackLevels;
@@ -1095,11 +1098,24 @@ function pollLuaState() {
                 choproText = fs.readFileSync(choproPath, "utf-8");
               }
               if (meta.lyrics && meta.bpm) {
-                state.sections = computeSections(meta.bpm, meta.lyrics, choproText, meta.duration_bars);
                 state.lyricLines = extractLyricLines(choproText);
+
+                // Compute actual duration + bar span from chordpro @bar annotations
+                let maxBar = meta.duration_bars || 128;
+                if (state.lyricLines && state.lyricLines.length > 0) {
+                  for (const l of state.lyricLines) {
+                    if (l.bar && l.bar > maxBar) maxBar = l.bar;
+                  }
+                }
+                const totalBars = Math.max(maxBar, meta.duration_bars || 128);
+
+                state.sections = computeSections(meta.bpm, meta.lyrics, choproText, totalBars);
+                state.duration = Math.round((totalBars * 4 * 60) / (meta.bpm || 120));
+                state._lastDurationSongId = luaState.songId;
+
                 const secCount = state.sections ? state.sections.length : 0;
                 const lyricCount = state.lyricLines ? state.lyricLines.length : 0;
-                console.log(`[Sections] ${luaState.songId}: ${secCount} sections, ${lyricCount} lyric lines, metaEntries=${meta.lyrics.length}`);
+                console.log(`[Sections] ${luaState.songId}: ${secCount} sections, ${lyricCount} lyric lines, metaEntries=${meta.lyrics.length}, duration=${state.duration}s, bars=${totalBars}`);
                 onSongLoaded();
               }
             }
