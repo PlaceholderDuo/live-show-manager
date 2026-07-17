@@ -1081,27 +1081,38 @@ function localSeek(secs) {
   broadcastState();
 }
 
-function localJumpToSong(songIdx) {
+function localJumpToSong(songIdx, songTitle) {
   localStop();
   ensureSongLibrary();
-  const idx = Math.max(0, Math.min(songLibrary.length - 1, (songIdx || 1) - 1));
-  if (songLibrary.length > 0 && idx < songLibrary.length) {
-    const entry = songLibrary[idx];
+  let entry = null;
+  if (songTitle) {
+    const lower = songTitle.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+    entry = songLibrary.find(s => {
+      const sLower = s.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+      return sLower === lower || sLower.includes(lower) || lower.includes(sLower);
+    });
+    if (entry) {
+      state.songIndex = songLibrary.indexOf(entry) + 1;
+    }
+  }
+  if (!entry) {
+    const idx = Math.max(0, Math.min(songLibrary.length - 1, (songIdx || 1) - 1));
+    entry = songLibrary[idx];
+    state.songIndex = idx + 1;
+  }
+  if (entry) {
     state.songId = entry.id;
     state.currentSong = entry.title;
     state.currentArtist = entry.artist || "";
     state.currentKey = entry.key || "";
     state.bpm = entry.bpm || 120;
-    state.duration = entry.duration || 120;
-    state.songIndex = idx + 1;
     state.totalSongs = songLibrary.length;
-    state.nextSong = idx + 1 < songLibrary.length ? songLibrary[idx + 1].title : null;
     lastSongId = null;
     localPlayOffset = 0;
     state.position = 0;
     processSongData(entry.id);
     broadcastState();
-    console.log(`[Local] Jump to song ${idx + 1}/${songLibrary.length}: ${entry.title}`);
+    console.log(`[Local] Loaded: ${entry.title} (idx ${state.songIndex}/${songLibrary.length})`);
   }
 }
 
@@ -1608,12 +1619,25 @@ app.post("/api/local/jump", (req, res) => {
   res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
 });
 app.post("/api/local/next", (req, res) => {
-  localJumpToSong(state.songIndex + 1);
+  const title = req.body && req.body.title;
+  const idx = state.songIndex + 1;
+  localJumpToSong(idx, title);
   res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
 });
 app.post("/api/local/prev", (req, res) => {
-  localJumpToSong(Math.max(1, state.songIndex - 1));
+  const title = req.body && req.body.title;
+  const idx = Math.max(1, state.songIndex - 1);
+  localJumpToSong(idx, title);
   res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
+});
+app.post("/api/local/load", (req, res) => {
+  const title = req.body && req.body.title;
+  if (title) {
+    localJumpToSong(1, title);
+    res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
+  } else {
+    res.json({ ok: false, error: "title required" });
+  }
 });
 
 // ── ChordPro file endpoint ──
