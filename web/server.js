@@ -946,6 +946,79 @@ function reaperAction(actionName) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// SONG LIBRARY (lazy-scanned from ~/ReaperSongs/ for local nav)
+// ═══════════════════════════════════════════════════════════
+let songLibrary = [];
+let songLibraryScanned = false;
+
+function ensureSongLibrary() {
+  if (songLibraryScanned) return;
+  try {
+    const dirs = fs.readdirSync(REAPER_SONGS_PATH, { withFileTypes: true })
+      .filter(d => d.isDirectory());
+    for (const dir of dirs) {
+      const metaPath = path.join(REAPER_SONGS_PATH, dir.name, "meta.json");
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+          const id = dir.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+          songLibrary.push({
+            id,
+            title: meta.title || dir.name,
+            artist: meta.artist || "",
+            key: meta.key || "",
+            bpm: meta.bpm || 120,
+            duration: meta.bpm && meta.duration_bars
+              ? Math.round((meta.duration_bars * 4 * 60) / meta.bpm)
+              : (meta.bpm ? Math.round((128 * 4 * 60) / meta.bpm) : 256),
+          });
+        } catch {}
+      }
+    }
+    songLibrary.sort((a, b) => a.title.localeCompare(b.title));
+    songLibraryScanned = true;
+    console.log(`[Library] Scanned ${songLibrary.length} songs from ${REAPER_SONGS_PATH}`);
+    state.totalSongs = songLibrary.length;
+  } catch (err) {
+    console.warn("[Library] Scan error:", err.message);
+    songLibraryScanned = true;
+  }
+}
+
+function processSongData(songId) {
+  const metaPath = resolveMetaPath(songId);
+  const choproPath = resolveChoproPath(songId);
+  try {
+    if (metaPath && fs.existsSync(metaPath)) {
+      const metaRaw = fs.readFileSync(metaPath, "utf-8");
+      const meta = JSON.parse(metaRaw);
+      let choproText = "";
+      if (choproPath && fs.existsSync(choproPath)) {
+        choproText = fs.readFileSync(choproPath, "utf-8");
+      }
+      if (meta.lyrics && meta.bpm) {
+        state.lyricLines = extractLyricLines(choproText);
+        let maxBar = meta.duration_bars || 128;
+        if (state.lyricLines && state.lyricLines.length > 0) {
+          for (const l of state.lyricLines) {
+            if (l.bar && l.bar > maxBar) maxBar = l.bar;
+          }
+        }
+        const totalBars = Math.max(maxBar, meta.duration_bars || 128);
+        state.sections = computeSections(meta.bpm, meta.lyrics, choproText, totalBars);
+        state.duration = Math.round((totalBars * 4 * 60) / (meta.bpm || 120));
+        state._lastDurationSongId = songId;
+        const secCount = state.sections ? state.sections.length : 0;
+        const lyricCount = state.lyricLines ? state.lyricLines.length : 0;
+        console.log(`[Sections] ${songId}: ${secCount} sections, ${lyricCount} lyric lines, duration=${state.duration}s, bars=${totalBars}`);
+      }
+    }
+  } catch (err) {
+    console.warn("[Sections] error for", songId, ":", err.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // LOCAL PLAYBACK ENGINE (rehearsal mode — no REAPER needed)
 // ═══════════════════════════════════════════════════════════
 // Runs at 60fps. Advances position locally when the Lua runner
@@ -958,6 +1031,21 @@ let localPlayOffset = 0;
 let localLastSongId = null;
 
 function localPlay() {
+  ensureSongLibrary();
+  if (!state.currentSong && songLibrary.length > 0) {
+    // No song loaded yet — load the first one
+    const entry = songLibrary[0];
+    state.songId = entry.id;
+    state.currentSong = entry.title;
+    state.currentArtist = entry.artist || "";
+    state.currentKey = entry.key || "";
+    state.bpm = entry.bpm || 120;
+    state.songIndex = 1;
+    state.totalSongs = songLibrary.length;
+    state.nextSong = songLibrary.length > 1 ? songLibrary[1].title : null;
+    lastSongId = null;
+    processSongData(entry.id);
+  }
   localPlayOffset = state.position || 0;
   localPlayStartTime = Date.now();
   localPlaying = true;
@@ -995,13 +1083,26 @@ function localSeek(secs) {
 
 function localJumpToSong(songIdx) {
   localStop();
-  state.songIndex = Math.max(1, Math.min(state.totalSongs, songIdx || 1));
-  // Trigger song reload — clear lastSongId so sections recompute
-  lastSongId = null;
-  localPlayOffset = 0;
-  state.position = 0;
-  pollLuaState();
-  broadcastState();
+  ensureSongLibrary();
+  const idx = Math.max(0, Math.min(songLibrary.length - 1, (songIdx || 1) - 1));
+  if (songLibrary.length > 0 && idx < songLibrary.length) {
+    const entry = songLibrary[idx];
+    state.songId = entry.id;
+    state.currentSong = entry.title;
+    state.currentArtist = entry.artist || "";
+    state.currentKey = entry.key || "";
+    state.bpm = entry.bpm || 120;
+    state.duration = entry.duration || 120;
+    state.songIndex = idx + 1;
+    state.totalSongs = songLibrary.length;
+    state.nextSong = idx + 1 < songLibrary.length ? songLibrary[idx + 1].title : null;
+    lastSongId = null;
+    localPlayOffset = 0;
+    state.position = 0;
+    processSongData(entry.id);
+    broadcastState();
+    console.log(`[Local] Jump to song ${idx + 1}/${songLibrary.length}: ${entry.title}`);
+  }
 }
 
 // 60fps tick — only active when local playback is running
@@ -1056,33 +1157,35 @@ function pollLuaState() {
       const raw = fs.readFileSync(BRIDGE_STATE_PATH, "utf-8").trim();
       if (raw) {
         const luaState = JSON.parse(raw);
-        state.currentSong = luaState.currentSong || state.currentSong;
-        state.songId = luaState.songId || state.songId;
-        state.nextSong = luaState.nextSong || state.nextSong;
-        state.songIndex = luaState.songIndex !== undefined ? luaState.songIndex : state.songIndex;
-        state.totalSongs = luaState.totalSongs !== undefined ? luaState.totalSongs : state.totalSongs;
-        state.bpm = luaState.bpm || state.bpm;
-        state.notes = luaState.notes || state.notes;
-        // Only use bridge duration if it changed (new song), preserve computed value
-        if (luaState.songId && luaState.songId !== state._lastDurationSongId) {
-          if (luaState.duration && luaState.duration > 0) state.duration = luaState.duration;
-        }
-        state.currentKey = luaState.currentKey || state.currentKey;
-        state.currentArtist = luaState.currentArtist || state.currentArtist;
-        state.trackLevels = luaState.trackLevels || state.trackLevels;
-        state.loopStates = luaState.loopStates || state.loopStates;
-        state.regions = luaState.regions || state.regions;
-        state.connected = reaperActive && (luaState.connected || false);
 
-        if (reaperActive && luaState.position !== undefined && luaState.playing !== undefined) {
-          state.position = luaState.position;
-          state.playing = luaState.playing;
-        }
+        // Only use bridge data when REAPER is actively connected.
+        // In local playback mode, the server manages these fields.
+        if (reaperActive && luaState.connected) {
+          state.currentSong = luaState.currentSong || state.currentSong;
+          state.songId = luaState.songId || state.songId;
+          state.nextSong = luaState.nextSong || state.nextSong;
+          state.songIndex = luaState.songIndex !== undefined ? luaState.songIndex : state.songIndex;
+          state.totalSongs = luaState.totalSongs !== undefined ? luaState.totalSongs : state.totalSongs;
+          state.bpm = luaState.bpm || state.bpm;
+          state.notes = luaState.notes || state.notes;
+          state.duration = luaState.duration > 0 ? luaState.duration : state.duration;
+          state.currentKey = luaState.currentKey || state.currentKey;
+          state.currentArtist = luaState.currentArtist || state.currentArtist;
+          state.trackLevels = luaState.trackLevels || state.trackLevels;
+          state.loopStates = luaState.loopStates || state.loopStates;
+          state.regions = luaState.regions || state.regions;
+          state.position = luaState.position !== undefined && luaState.playing !== undefined
+            ? luaState.position : state.position;
+          state.playing = luaState.playing !== undefined ? luaState.playing : state.playing;
+          state.connected = true;
 
-        if (luaState.fxData) io.emit("fxData", luaState.fxData);
-        if (luaState.trackLevels) io.emit("trackLevels", luaState.trackLevels);
-        if (luaState.loopStates) io.emit("loopState", luaState.loopStates);
-        if (luaState.synthData) io.emit("synthData", luaState.synthData);
+          if (luaState.fxData) io.emit("fxData", luaState.fxData);
+          if (luaState.trackLevels) io.emit("trackLevels", luaState.trackLevels);
+          if (luaState.loopStates) io.emit("loopState", luaState.loopStates);
+          if (luaState.synthData) io.emit("synthData", luaState.synthData);
+        } else {
+          state.connected = false;
+        }
 
         // On song change, compute sections from meta.json + ChordPro directives
         if (luaState.songId && luaState.songId !== lastSongId) {
