@@ -1084,15 +1084,18 @@ function localSeek(secs) {
 function localJumpToSong(songIdx, songTitle) {
   localStop();
   ensureSongLibrary();
-  let entry = null;
   if (songTitle) {
     const lower = songTitle.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
     entry = songLibrary.find(s => {
       const sLower = s.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
-      return sLower === lower || sLower.includes(lower) || lower.includes(sLower);
+      return sLower === lower || (sLower.length > 5 && lower.length > 5 &&
+        (sLower.includes(lower) || lower.includes(sLower)));
     });
     if (entry) {
       state.songIndex = songLibrary.indexOf(entry) + 1;
+    } else {
+      console.warn(`[Local] Song not found: "${songTitle}"`);
+      return false;
     }
   }
   if (!entry) {
@@ -1113,7 +1116,9 @@ function localJumpToSong(songIdx, songTitle) {
     processSongData(entry.id);
     broadcastState();
     console.log(`[Local] Loaded: ${entry.title} (idx ${state.songIndex}/${songLibrary.length})`);
+    return true;
   }
+  return false;
 }
 
 // 60fps tick — only active when local playback is running
@@ -1621,20 +1626,20 @@ app.post("/api/local/jump", (req, res) => {
 app.post("/api/local/next", (req, res) => {
   const title = req.body && req.body.title;
   const idx = state.songIndex + 1;
-  localJumpToSong(idx, title);
+  localJumpToSong(title ? undefined : idx, title);
   res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
 });
 app.post("/api/local/prev", (req, res) => {
   const title = req.body && req.body.title;
   const idx = Math.max(1, state.songIndex - 1);
-  localJumpToSong(idx, title);
+  localJumpToSong(title ? undefined : idx, title);
   res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
 });
 app.post("/api/local/load", (req, res) => {
   const title = req.body && req.body.title;
   if (title) {
-    localJumpToSong(1, title);
-    res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
+    const ok = localJumpToSong(1, title);
+    res.json({ ok, songIndex: state.songIndex, currentSong: state.currentSong });
   } else {
     res.json({ ok: false, error: "title required" });
   }
