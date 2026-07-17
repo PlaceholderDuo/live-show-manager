@@ -946,6 +946,102 @@ function reaperAction(actionName) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// LOCAL PLAYBACK ENGINE (rehearsal mode — no REAPER needed)
+// ═══════════════════════════════════════════════════════════
+// Runs at 60fps. Advances position locally when the Lua runner
+// is not connected (REAPER not running). Allows the HUD,
+// iPhone controller, and TUI to function standalone without
+// REAPER transport.
+let localPlaying = false;
+let localPlayStartTime = 0;
+let localPlayOffset = 0;
+let localLastSongId = null;
+
+function localPlay() {
+  localPlayOffset = state.position || 0;
+  localPlayStartTime = Date.now();
+  localPlaying = true;
+  state.playing = true;
+  broadcastState();
+  console.log("[Local] Play from", localPlayOffset.toFixed(1) + "s");
+}
+
+function localPause() {
+  if (localPlaying) {
+    localPlayOffset = localPlayOffset + (Date.now() - localPlayStartTime) / 1000;
+    state.position = localPlayOffset;
+  }
+  localPlaying = false;
+  state.playing = false;
+  broadcastState();
+  console.log("[Local] Pause at", state.position.toFixed(1) + "s");
+}
+
+function localStop() {
+  localPlaying = false;
+  localPlayOffset = 0;
+  state.position = 0;
+  state.playing = false;
+  broadcastState();
+  console.log("[Local] Stop");
+}
+
+function localSeek(secs) {
+  localPlayOffset = Math.max(0, secs);
+  state.position = localPlayOffset;
+  if (localPlaying) localPlayStartTime = Date.now();
+  broadcastState();
+}
+
+function localJumpToSong(songIdx) {
+  localStop();
+  state.songIndex = Math.max(1, Math.min(state.totalSongs, songIdx || 1));
+  // Trigger song reload — clear lastSongId so sections recompute
+  lastSongId = null;
+  localPlayOffset = 0;
+  state.position = 0;
+  pollLuaState();
+  broadcastState();
+}
+
+// 60fps tick — only active when local playback is running
+setInterval(() => {
+  if (!localPlaying) return;
+
+  const elapsed = localPlayOffset + (Date.now() - localPlayStartTime) / 1000;
+  const duration = state.duration || 120;
+
+  if (elapsed >= duration) {
+    // Song finished — advance to next
+    localStop();
+    if (state.songIndex < state.totalSongs) {
+      console.log("[Local] Song finished, advancing to next");
+      localJumpToSong(state.songIndex + 1);
+      localPlay();
+    }
+    return;
+  }
+
+  state.position = elapsed;
+  state.playing = true;
+
+  // Throttle section broadcasts to ~10fps for perf
+  if (Math.floor(elapsed * 10) !== Math.floor((state.position || 0) * 10)) {
+    broadcastState();
+  }
+}, 16);
+
+// Restart local playback when new song data arrives
+function onSongLoaded() {
+  if (localPlaying) {
+    localPlayOffset = 0;
+    localPlayStartTime = Date.now();
+    state.position = 0;
+    broadcastState();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // LUA STATE BRIDGE (file polling)
 // ═══════════════════════════════════════════════════════════
 const BRIDGE_STATE_PATH = path.join(__dirname, "..", "data", "bridge_state.json");
@@ -953,24 +1049,37 @@ const BRIDGE_STATE_PATH = path.join(__dirname, "..", "data", "bridge_state.json"
 function pollLuaState() {
   try {
     if (fs.existsSync(BRIDGE_STATE_PATH)) {
+      const stat = fs.statSync(BRIDGE_STATE_PATH);
+      const ageSec = (Date.now() - stat.mtimeMs) / 1000;
+      const reaperActive = ageSec < 5;
+
       const raw = fs.readFileSync(BRIDGE_STATE_PATH, "utf-8").trim();
       if (raw) {
         const luaState = JSON.parse(raw);
-        if (luaState.currentSong) state.currentSong = luaState.currentSong;
-        if (luaState.songId) state.songId = luaState.songId;
-        if (luaState.nextSong) state.nextSong = luaState.nextSong;
-        if (luaState.songIndex !== undefined) state.songIndex = luaState.songIndex;
-        if (luaState.totalSongs !== undefined) state.totalSongs = luaState.totalSongs;
-        if (luaState.bpm) state.bpm = luaState.bpm;
-        if (luaState.notes) state.notes = luaState.notes;
-        if (luaState.position !== undefined) state.position = luaState.position;
-        if (luaState.playing !== undefined) state.playing = luaState.playing;
-        if (luaState.duration) state.duration = luaState.duration;
-        if (luaState.currentKey) state.currentKey = luaState.currentKey;
-        if (luaState.currentArtist) state.currentArtist = luaState.currentArtist;
-        if (luaState.trackLevels) state.trackLevels = luaState.trackLevels;
-        if (luaState.loopStates) state.loopStates = luaState.loopStates;
-        if (luaState.connected !== undefined) state.connected = luaState.connected;
+        state.currentSong = luaState.currentSong || state.currentSong;
+        state.songId = luaState.songId || state.songId;
+        state.nextSong = luaState.nextSong || state.nextSong;
+        state.songIndex = luaState.songIndex !== undefined ? luaState.songIndex : state.songIndex;
+        state.totalSongs = luaState.totalSongs !== undefined ? luaState.totalSongs : state.totalSongs;
+        state.bpm = luaState.bpm || state.bpm;
+        state.notes = luaState.notes || state.notes;
+        state.duration = luaState.duration || state.duration;
+        state.currentKey = luaState.currentKey || state.currentKey;
+        state.currentArtist = luaState.currentArtist || state.currentArtist;
+        state.trackLevels = luaState.trackLevels || state.trackLevels;
+        state.loopStates = luaState.loopStates || state.loopStates;
+        state.regions = luaState.regions || state.regions;
+        state.connected = reaperActive && (luaState.connected || false);
+
+        if (reaperActive && luaState.position !== undefined && luaState.playing !== undefined) {
+          state.position = luaState.position;
+          state.playing = luaState.playing;
+        }
+
+        if (luaState.fxData) io.emit("fxData", luaState.fxData);
+        if (luaState.trackLevels) io.emit("trackLevels", luaState.trackLevels);
+        if (luaState.loopStates) io.emit("loopState", luaState.loopStates);
+        if (luaState.synthData) io.emit("synthData", luaState.synthData);
 
         // On song change, compute sections from meta.json + ChordPro directives
         if (luaState.songId && luaState.songId !== lastSongId) {
@@ -991,6 +1100,7 @@ function pollLuaState() {
                 const secCount = state.sections ? state.sections.length : 0;
                 const lyricCount = state.lyricLines ? state.lyricLines.length : 0;
                 console.log(`[Sections] ${luaState.songId}: ${secCount} sections, ${lyricCount} lyric lines, metaEntries=${meta.lyrics.length}`);
+                onSongLoaded();
               }
             }
           } catch (err) {
@@ -1038,23 +1148,34 @@ io.on("connection", (socket) => {
 
     switch (type) {
       case "play":
-        if (state.playing) reaperAction("pause");
-        else reaperAction("play");
+        if (!state.connected) {
+          // Local playback mode — REAPER not connected
+          if (localPlaying) localPause();
+          else localPlay();
+        } else {
+          if (state.playing) reaperAction("pause");
+          else reaperAction("play");
+        }
         break;
       case "pause":
-        reaperAction("pause");
+        if (!state.connected) localPause();
+        else reaperAction("pause");
         break;
       case "stop":
-        reaperAction("stop");
+        if (!state.connected) localStop();
+        else reaperAction("stop");
         break;
       case "prev":
       case "next": {
-        const dir = type === "next" ? 1 : -1;
+        if (!state.connected) {
+          localJumpToSong(state.songIndex + 1);
+          break;
+        }
+        const dir = 1;
         const targetIdx = Math.max(1, Math.min(state.totalSongs, (state.songIndex || 1) + dir));
         const targetRegion = state.regions && state.regions[targetIdx - 1];
         if (targetRegion && targetIdx !== state.songIndex) {
           const wasPlaying = state.playing;
-          // Seek + play if was playing, just seek if stopped
           sendOSC("/play", [targetRegion.startTime, wasPlaying ? 1 : 0]);
         }
         break;
@@ -1156,6 +1277,12 @@ io.on("connection", (socket) => {
 
       // ── Live Controller: Start next song in queue ──
       case "start_song": {
+        if (!state.connected) {
+          localJumpToSong(state.songIndex + 1);
+          localPlay();
+          console.log(`[Start] Local: jump to song ${state.songIndex}`);
+          break;
+        }
         const nextIdx = Math.min(state.totalSongs, (state.songIndex || 0) + 1);
         const target = state.regions && state.regions[nextIdx - 1];
         if (target) {
@@ -1341,6 +1468,33 @@ app.post("/api/action", (req, res) => {
   const { type, value } = req.body || {};
   io.emit("action", { type, value });
   res.json({ ok: true });
+});
+
+// ── Local playback control (rehearsal mode) ──
+app.post("/api/local/play", (req, res) => {
+  localPlay();
+  res.json({ ok: true, playing: true, position: state.position });
+});
+app.post("/api/local/stop", (req, res) => {
+  localStop();
+  res.json({ ok: true, playing: false, position: 0 });
+});
+app.post("/api/local/pause", (req, res) => {
+  localPause();
+  res.json({ ok: true, playing: false, position: state.position });
+});
+app.post("/api/local/jump", (req, res) => {
+  const idx = req.body && req.body.songIndex;
+  localJumpToSong(idx || 1);
+  res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
+});
+app.post("/api/local/next", (req, res) => {
+  localJumpToSong(state.songIndex + 1);
+  res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
+});
+app.post("/api/local/prev", (req, res) => {
+  localJumpToSong(Math.max(1, state.songIndex - 1));
+  res.json({ ok: true, songIndex: state.songIndex, currentSong: state.currentSong });
 });
 
 // ── ChordPro file endpoint ──
