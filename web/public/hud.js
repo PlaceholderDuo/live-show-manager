@@ -78,6 +78,58 @@
   window.addEventListener('resize', fitHud);
 
   // ═══════════════════════════════════════════════════════════
+  // DEBUG MODE — toggle with ?debug=1 URL param
+  // Shows bar annotations, timeline, and lyric timing accuracy
+  // ═══════════════════════════════════════════════════════════
+  var debugMode = /[?&]debug=1/.test(window.location.search);
+  var dbgOverlay = document.getElementById("debugOverlay");
+  var dbgLines = document.getElementById("dbgLines");
+  var dbgTimeline = document.getElementById("dbgTimeline");
+
+  function debugTimeline(sections, currentBar, totalBars, duration, position) {
+    if (!debugMode || !dbgTimeline) return;
+    var html = "";
+    totalBars = totalBars || 128;
+    var types = { verse: "#1abc9c", chorus: "#e74c3c", intro: "#3498db", outro: "#9b59b6", solo: "#f1c40f", bridge: "#e67e22" };
+    for (var i = 0; i < sections.length; i++) {
+      var sec = sections[i];
+      var left = (sec.bar / totalBars) * 100;
+      var nextBar = (i + 1 < sections.length) ? sections[i + 1].bar : totalBars;
+      var width = ((nextBar - sec.bar) / totalBars) * 100;
+      html += '<div title="' + sec.text + ' (bar ' + sec.bar + ')" style="position:absolute;left:' + left.toFixed(2) + '%;width:' + Math.max(0.5, width).toFixed(2) + '%;height:100%;background:' + (types[sec.type] || "#555") + ';opacity:0.6;border-right:1px solid #000;"></div>';
+    }
+    var ph = (currentBar / totalBars) * 100;
+    html += '<div style="position:absolute;left:' + ph.toFixed(2) + '%;top:-2px;width:2px;height:calc(100% + 4px);background:#fff;z-index:1;box-shadow:0 0 4px #fff;"></div>';
+    dbgTimeline.innerHTML = html;
+    document.getElementById("dbgBar").textContent = "Bar:" + currentBar + "/" + totalBars + " Pos:" + (position || 0).toFixed(1) + "s";
+  }
+
+  function debugLyricLines(lines, currentIdx) {
+    if (!debugMode || !dbgLines) return;
+    var annotated = 0, estimated = 0;
+    var html = "";
+    var start = Math.max(0, currentIdx - 5);
+    var end = Math.min(lines.length, currentIdx + 5);
+    for (var i = start; i < end; i++) {
+      var line = lines[i];
+      var hasBar = line._bar !== null && line._bar !== undefined;
+      if (hasBar) annotated++; else estimated++;
+      var text = line.pairs ? line.pairs.map(function (p) { return p.word || (p.chord ? "[" + p.chord + "]" : ""); }).join("").substring(0, 60) : "";
+      var barStr = hasBar ? " @bar=" + line._bar : " ~est";
+      var color = i === currentIdx ? "#fff" : (hasBar ? "#2ecc71" : "#555");
+      html += '<div style="color:' + color + (i === currentIdx ? ';font-weight:bold' : '') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+        (i === currentIdx ? '▶ ' : '  ') + barStr + '  ' + text + '</div>';
+    }
+    dbgLines.innerHTML = html;
+    document.getElementById("dbgAnnotated").textContent = "Exact:" + annotated;
+    document.getElementById("dbgEstimated").textContent = "Est:" + estimated;
+  }
+
+  if (debugMode) {
+    dbgOverlay.style.display = "block";
+  }
+
+  // ═══════════════════════════════════════════════════════════
   // CHORDPRO PARSER → chord-word pairs
   // ═══════════════════════════════════════════════════════════
 
@@ -886,6 +938,16 @@
           prepareSongLines(parsedLines, s.sections);
         }
         renderRollingEngine(barCalc, parsedLines, s.sections);
+      }
+
+      // Debug overlay updates
+      if (debugMode) {
+        debugTimeline(s.sections, barCalc, totalBars || 128, s.duration, s.position);
+        var curIdx = 0;
+        for (var di = 0; di < parsedLines.length; di++) {
+          if (parsedLines[di]._bar !== null && parsedLines[di]._bar !== undefined && parsedLines[di]._bar <= barCalc) curIdx = di;
+        }
+        debugLyricLines(parsedLines, curIdx);
       }
       } catch (e) {
         console.error("HUD ERROR:", e.message, e.stack);

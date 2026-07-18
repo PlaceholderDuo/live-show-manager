@@ -109,6 +109,17 @@
 
   </div>
 
+  <div id="debugOverlay" style="display:none; position:fixed; bottom:0; left:0; right:0; height:140px; background:rgba(0,0,0,0.92); border-top:1px solid #333; z-index:999; font-family:monospace; font-size:10px; color:#aaa; padding:8px 12px; overflow-y:auto;">
+    <div style="display:flex; gap:16px; margin-bottom:4px;">
+      <span>DEBUG MODE</span>
+      <span id="dbgBar"></span>
+      <span id="dbgAnnotated"></span>
+      <span id="dbgEstimated"></span>
+    </div>
+    <div id="dbgTimeline" style="position:relative; height:18px; background:#111; border-radius:3px; margin:4px 0 8px; overflow:hidden;"></div>
+    <div id="dbgLines" style="max-height:60px; overflow-y:auto;"></div>
+  </div>
+
   <script src="/socket.io/socket.io.js"></script>
   <script src="/hud.js"></script>
 </body>
