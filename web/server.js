@@ -1370,11 +1370,11 @@ io.on("connection", (socket) => {
       // ── Mix mute/solo (via OSC) ──
       case "mute":
         if (typeof value === 'object' && value.track !== undefined) {
-          sendOSC(`/track/${value.track}/mute`, [value.state ? 1 : 0]);
+          sendOSC(`/mixer/mute/${value.track}`, [value.state ? 1 : 0]);
           state.trackMutes[value.track] = value.state;
           broadcastState();
         } else {
-          sendOSC(`/track/${value}/mute`, [1]);
+          sendOSC(`/mixer/mute/${value}`, [1]);
         }
         break;
       case "solo":
@@ -1385,22 +1385,13 @@ io.on("connection", (socket) => {
         }
         break;
 
-      // ── Live Controller: Level-based mute (vocal/all/none) ──
-      // value.level: "vocal" | "all" | "none"
+      // ── Live Controller: Level-based mute ──
+      // ReaLearn maps: /panic/vocal → mute vocal, /panic/all → mute all, /panic/restore → unmute
       case "mute_with_level": {
         const level = (value && value.level) || "none";
-        // Track indices for the current live project (edm-live-rig + vocal)
-        const TRACKS = { vocal: 0, drums: 1, bass: 2, pads: 3 };
-          // ⚠ Adjust these indices to match the actual REAPER project
-        if (level === "vocal") {
-          sendOSC(`/track/${TRACKS.vocal}/mute`, [1]);
-        } else if (level === "all") {
-          sendOSC(`/track/${TRACKS.vocal}/mute`, [1]);
-          sendOSC("/master/mute", [1]);
-        } else {
-          sendOSC(`/track/${TRACKS.vocal}/mute`, [0]);
-          sendOSC("/master/mute", [0]);
-        }
+        if (level === "vocal") sendOSC("/panic/vocal", [1]);
+        else if (level === "all") sendOSC("/panic/all", [1]);
+        else sendOSC("/panic/restore", [1]);
         break;
       }
 
@@ -1410,10 +1401,10 @@ io.on("connection", (socket) => {
         const scene = parseInt((value && value.scene) || value, 10);
         if (scene >= 1 && scene <= 8) {
           const n = String(scene).padStart(2, "0");
-          sendOSC(`/action/_SWSSNAPSHOT_GET_${n}`, []);
+          sendOSC(`/edm/scene/${scene}`, [1]);
           state.activeScene = scene;
           broadcastState();
-          console.log(`[Scene] Load snapshot ${scene}`);
+          console.log(`[Scene] /edm/scene/${scene}`);
         }
         break;
       }
@@ -1422,11 +1413,9 @@ io.on("connection", (socket) => {
       // value.on: true (unmute) / false (mute)
       case "keys_toggle": {
         const on = value && value.on;
-        // Mute/unmute keyboard VST tracks (PADS, LEADS, PLUCKS)
-        // Track indices: adjust to match project
-        [3, 4, 5].forEach(function(ti) {
-          sendOSC(`/track/${ti}/mute`, [on ? 0 : 1]);
-        });
+        // ReaLearn maps: /keys/on → unmute VST tracks, /keys/off → mute them
+        const on = value && value.on;
+        sendOSC(on ? "/keys/on" : "/keys/off", [1]);
         state.keysOn = on;
         broadcastState();
         console.log(`[Keys] ${on ? 'ON' : 'OFF'}`);
@@ -1453,39 +1442,17 @@ io.on("connection", (socket) => {
       }
 
       // ── Live Controller: GTR AMP preset ──
-      // Selects between BE (Brown Eye), SSS (Steel String Singer), and Acoustic
-      // Track 6 = GTR NAM (FX1=BE, FX2=SSS), Track 7 = Acoustic
+      // Sends clean OSC commands for ReaLearn to map.
+      // Configure once in ReaLearn (no server changes needed):
+      //   /amp/select/BE       → Track "GTR NAM": unmute + enable BE FX
+      //   /amp/select/SSS      → Track "GTR NAM": unmute + enable SSS FX
+      //   /amp/select/Acoustic → Track "GTR NAM": mute + Track "Acoustic": unmute
       case "gtr_amp_preset": {
         const preset = (value && value.preset) || "BE";
-        const NAM_TRACK = 6;
-        const ACOUSTIC_TRACK = 7;
-        const BE_FX = 1;
-        const SSS_FX = 2;
-
-        switch (preset) {
-          case "BE":
-            sendOSC(`/track/${NAM_TRACK}/mute`, [0]);       // Unmute NAM track
-            sendOSC(`/track/${NAM_TRACK}/fx/${BE_FX}/bypass`, [0]);  // Unbypass BE
-            sendOSC(`/track/${NAM_TRACK}/fx/${SSS_FX}/bypass`, [1]); // Bypass SSS
-            sendOSC(`/track/${ACOUSTIC_TRACK}/mute`, [1]);   // Mute acoustic
-            break;
-          case "SSS":
-            sendOSC(`/track/${NAM_TRACK}/mute`, [0]);
-            sendOSC(`/track/${NAM_TRACK}/fx/${BE_FX}/bypass`, [1]);
-            sendOSC(`/track/${NAM_TRACK}/fx/${SSS_FX}/bypass`, [0]);
-            sendOSC(`/track/${ACOUSTIC_TRACK}/mute`, [1]);
-            break;
-          case "Acoustic":
-            sendOSC(`/track/${NAM_TRACK}/mute`, [1]);         // Mute NAM track
-            sendOSC(`/track/${ACOUSTIC_TRACK}/mute`, [0]);     // Unmute acoustic
-            break;
-          default:
-            console.warn(`[GTR AMP] Unknown preset: ${preset}`);
-            break;
-        }
+        sendOSC(`/amp/select/${preset}`, [1]);
         state.activeAmpPreset = preset;
         broadcastState();
-        console.log(`[GTR AMP] Preset: ${preset}`);
+        console.log(`[GTR AMP] OSC → /amp/select/${preset}`);
         break;
       }
 
@@ -1549,7 +1516,7 @@ io.on("connection", (socket) => {
     const trackIdx = TRACK_MAP[knob] || 1;
     const fxIdx = FX_MAP[knob] || 1;
     const paramIdx = PARAM_MAP[knob] || 1;
-    sendOSC(`/track/${trackIdx}/fx/${fxIdx}/param/${paramIdx}/value`, [value]);
+    sendOSC(`/edm/${knob}`, [value]);
   });
 
   // ── GTR FX knob changes (iPhone → REAPER) ──
