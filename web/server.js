@@ -1325,11 +1325,11 @@ io.on("connection", (socket) => {
         break;
       case "prev":
       case "next": {
+        const dir = type === "next" ? 1 : -1;
         if (!state.connected) {
-          localJumpToSong(state.songIndex + 1);
+          localJumpToSong(state.songIndex + dir);
           break;
         }
-        const dir = 1;
         const targetIdx = Math.max(1, Math.min(state.totalSongs, (state.songIndex || 1) + dir));
         const targetRegion = state.regions && state.regions[targetIdx - 1];
         if (targetRegion && targetIdx !== state.songIndex) {
@@ -1378,11 +1378,7 @@ io.on("connection", (socket) => {
         }
         break;
       case "solo":
-        if (typeof value === 'object' && value.track !== undefined) {
-          sendOSC(`/track/${value.track}/solo`, [value.state ? 1 : 0]);
-        } else {
-          sendOSC(`/track/${value}/solo`, [1]);
-        }
+        sendOSC(`/mixer/solo/${typeof value === 'object' ? value.track : value}`, [1]);
         break;
 
       // ── Live Controller: Level-based mute ──
@@ -1410,10 +1406,8 @@ io.on("connection", (socket) => {
       }
 
       // ── Live Controller: Keys (VST) toggle ──
-      // value.on: true (unmute) / false (mute)
+      // ReaLearn maps: /keys/on → unmute VST tracks, /keys/off → mute them
       case "keys_toggle": {
-        const on = value && value.on;
-        // ReaLearn maps: /keys/on → unmute VST tracks, /keys/off → mute them
         const on = value && value.on;
         sendOSC(on ? "/keys/on" : "/keys/off", [1]);
         state.keysOn = on;
@@ -1522,17 +1516,13 @@ io.on("connection", (socket) => {
   // ── GTR FX knob changes (iPhone → REAPER) ──
   socket.on("gtrFxKnob", (data) => {
     const { param, value } = data || {};
-    const GTR_TRACK = 6;
-    const PARAM_MAP = { delay_time: 1, feedback: 2, mod_rate: 3, mod_depth: 4 };
-    const paramIdx = PARAM_MAP[param] || 1;
-    sendOSC(`/track/${GTR_TRACK}/fx/1/param/${paramIdx}/value`, [value]);
+    sendOSC(`/gtrfx/${param}`, [value]);
   });
 
   // ── FX parameter change (via OSC) ──
   socket.on("fxParam", (data) => {
-    const { trackIdx, fxIdx, paramIdx, value } = data || {};
-    const address = `/track/${trackIdx}/fx/${fxIdx}/param/${paramIdx}/value`;
-    sendOSC(address, [value]);
+    const { trackIdx, value } = data || {};
+    sendOSC(`/vst/next/${trackIdx}`, [value || 1]);
   });
 
   // ── FX selected (user taps FX chip → server updates knob context) ──
@@ -1559,14 +1549,7 @@ io.on("connection", (socket) => {
   // This handler covers the iPhone's on-screen virtual knob controls.
   socket.on("knob", (data) => {
     const { knob, value } = data || {};
-    const ctx = clientContexts.get(socket.id);
-
-    if (ctx && ctx.activeTab === "fx" && ctx.fxTrackIdx !== undefined && ctx.fxIdx !== undefined) {
-      const address = `/track/${ctx.fxTrackIdx}/fx/${ctx.fxIdx}/param/${knob}/value`;
-      sendOSC(address, [value]);
-    } else {
-      sendOSC(`/control/knob/${knob}`, [value]);
-    }
+    sendOSC(`/control/knob/${knob}`, [value]);
   });
 
   socket.on("disconnect", () => {
