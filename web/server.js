@@ -946,10 +946,19 @@ function reaperAction(actionName) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// SONG LIBRARY (lazy-scanned from ~/ReaperSongs/ for local nav)
+// SONG LIBRARY + ACTIVE SETLIST
 // ═══════════════════════════════════════════════════════════
 let songLibrary = [];
 let songLibraryScanned = false;
+let activeSetlist = []; // ordered array of {title} from TUI
+
+function setActiveSetlist(songs) {
+  if (!Array.isArray(songs) || songs.length === 0) return;
+  activeSetlist = songs.filter(s => s && s.title);
+  state.totalSongs = activeSetlist.length;
+  state.songIndex = 1;
+  console.log(`[Setlist] Active: ${activeSetlist.length} songs`);
+}
 
 function ensureSongLibrary() {
   if (songLibraryScanned) return;
@@ -1084,6 +1093,21 @@ function localSeek(secs) {
 function localJumpToSong(songIdx, songTitle) {
   localStop();
   ensureSongLibrary();
+  let entry = null;
+
+  if (activeSetlist.length > 0 && songTitle) {
+    const lower = songTitle.toLowerCase().trim();
+    const idx = activeSetlist.findIndex(s => s.title.toLowerCase().trim() === lower);
+    if (idx >= 0) {
+      state.songIndex = idx + 1;
+      songTitle = activeSetlist[idx].title;
+    }
+  } else if (activeSetlist.length > 0 && songIdx !== undefined) {
+    const idx = Math.max(0, Math.min(activeSetlist.length - 1, songIdx - 1));
+    state.songIndex = idx + 1;
+    songTitle = activeSetlist[idx].title;
+  }
+
   if (songTitle) {
     const lower = songTitle.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
     entry = songLibrary.find(s => {
@@ -1091,9 +1115,7 @@ function localJumpToSong(songIdx, songTitle) {
       return sLower === lower || (sLower.length > 5 && lower.length > 5 &&
         (sLower.includes(lower) || lower.includes(sLower)));
     });
-    if (entry) {
-      state.songIndex = songLibrary.indexOf(entry) + 1;
-    } else {
+    if (!entry) {
       console.warn(`[Local] Song not found: "${songTitle}"`);
       return false;
     }
@@ -1103,22 +1125,23 @@ function localJumpToSong(songIdx, songTitle) {
     entry = songLibrary[idx];
     state.songIndex = idx + 1;
   }
-  if (entry) {
-    state.songId = entry.id;
-    state.currentSong = entry.title;
-    state.currentArtist = entry.artist || "";
-    state.currentKey = entry.key || "";
-    state.bpm = entry.bpm || 120;
-    state.totalSongs = songLibrary.length;
-    lastSongId = null;
-    localPlayOffset = 0;
-    state.position = 0;
-    processSongData(entry.id);
-    broadcastState();
-    console.log(`[Local] Loaded: ${entry.title} (idx ${state.songIndex}/${songLibrary.length})`);
-    return true;
+
+  state.songId = entry.id;
+  state.currentSong = entry.title;
+  state.currentArtist = entry.artist || "";
+  state.currentKey = entry.key || "";
+  state.bpm = entry.bpm || 120;
+  state.totalSongs = activeSetlist.length || songLibrary.length;
+  if (activeSetlist.length > 0) {
+    state.nextSong = state.songIndex < activeSetlist.length ? activeSetlist[state.songIndex].title : null;
   }
-  return false;
+  lastSongId = null;
+  localPlayOffset = 0;
+  state.position = 0;
+  processSongData(entry.id);
+  broadcastState();
+  console.log(`[Local] Loaded: ${entry.title} (${state.songIndex}/${state.totalSongs})`);
+  return true;
 }
 
 // 60fps tick — only active when local playback is running
@@ -1430,19 +1453,39 @@ io.on("connection", (socket) => {
       }
 
       // ── Live Controller: GTR AMP preset ──
-      // value.preset: "OSD" | "SSS" | "SSS CLN" | "BE" | "BE CLN" | "TRLX" | "TWD"
+      // Selects between BE (Brown Eye), SSS (Steel String Singer), and Acoustic
+      // Track 6 = GTR NAM (FX1=BE, FX2=SSS), Track 7 = Acoustic
       case "gtr_amp_preset": {
-        const preset = (value && value.preset) || "OSD";
-        const GTR_TRACK = 6;
-        // NAM preset index mapping — adjust FX and param indices to match project
-        const NAM_PRESET_MAP = {
-          "OSD": 0, "SSS": 1, "SSS CLN": 2, "BE": 3, "BE CLN": 4, "TRLX": 5, "TWD": 6
-        };
-        const presetIdx = NAM_PRESET_MAP[preset] !== undefined ? NAM_PRESET_MAP[preset] : 0;
-        sendOSC(`/track/${GTR_TRACK}/fx/1/param/1/value`, [presetIdx / 6]);
+        const preset = (value && value.preset) || "BE";
+        const NAM_TRACK = 6;
+        const ACOUSTIC_TRACK = 7;
+        const BE_FX = 1;
+        const SSS_FX = 2;
+
+        switch (preset) {
+          case "BE":
+            sendOSC(`/track/${NAM_TRACK}/mute`, [0]);       // Unmute NAM track
+            sendOSC(`/track/${NAM_TRACK}/fx/${BE_FX}/bypass`, [0]);  // Unbypass BE
+            sendOSC(`/track/${NAM_TRACK}/fx/${SSS_FX}/bypass`, [1]); // Bypass SSS
+            sendOSC(`/track/${ACOUSTIC_TRACK}/mute`, [1]);   // Mute acoustic
+            break;
+          case "SSS":
+            sendOSC(`/track/${NAM_TRACK}/mute`, [0]);
+            sendOSC(`/track/${NAM_TRACK}/fx/${BE_FX}/bypass`, [1]);
+            sendOSC(`/track/${NAM_TRACK}/fx/${SSS_FX}/bypass`, [0]);
+            sendOSC(`/track/${ACOUSTIC_TRACK}/mute`, [1]);
+            break;
+          case "Acoustic":
+            sendOSC(`/track/${NAM_TRACK}/mute`, [1]);         // Mute NAM track
+            sendOSC(`/track/${ACOUSTIC_TRACK}/mute`, [0]);     // Unmute acoustic
+            break;
+          default:
+            console.warn(`[GTR AMP] Unknown preset: ${preset}`);
+            break;
+        }
         state.activeAmpPreset = preset;
         broadcastState();
-        console.log(`[GTR AMP] Preset: ${preset} → NAM index ${presetIdx}`);
+        console.log(`[GTR AMP] Preset: ${preset}`);
         break;
       }
 
@@ -1643,6 +1686,15 @@ app.post("/api/local/load", (req, res) => {
   } else {
     res.json({ ok: false, error: "title required" });
   }
+});
+
+app.post("/api/local/setlist", (req, res) => {
+  const songs = req.body && req.body.songs;
+  setActiveSetlist(songs || []);
+  if (activeSetlist.length > 0) {
+    localJumpToSong(1, activeSetlist[0].title);
+  }
+  res.json({ ok: true, count: activeSetlist.length, currentSong: state.currentSong });
 });
 
 // ── ChordPro file endpoint ──
