@@ -363,6 +363,7 @@ html, body {
   border-radius: 4px;
   overflow: hidden;
   border: 1px solid #333;
+  margin-top: 12px;
 }
 
 .solo-progress-fill {
@@ -371,6 +372,15 @@ html, body {
   background: #ff5500;
   border-radius: 4px;
   transition: width 0.3s ease;
+  box-shadow: 0 0 8px rgba(255,85,0,0.3);
+}
+
+.solo-remaining-text {
+  font-size: 0.9rem;
+  color: #ff5500;
+  font-weight: 600;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 .solo-cue {
@@ -380,6 +390,61 @@ html, body {
   color: #555;
   letter-spacing: 2px;
   text-transform: uppercase;
+}
+
+/* ══════════════════════════════════════════════════════
+   GAP PROGRESS — instrumental intros & between-lyric waits
+   ══════════════════════════════════════════════════════ */
+.gap-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 0 8px;
+  animation: gap-fade-in 0.3s ease;
+}
+
+@keyframes gap-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.gap-progress-label {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #ff8800;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+.gap-progress-bar {
+  width: 70%;
+  height: 6px;
+  background: #1a1a1a;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid #333;
+}
+
+.gap-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #ff5500, #ff8800);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+  box-shadow: 0 0 10px rgba(255,136,0,0.3);
+}
+
+.gap-progress-text {
+  font-size: 0.85rem;
+  color: #666;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.3s;
+}
+
+.gap-progress.near .gap-progress-text {
+  color: #ff8800;
+  font-weight: 600;
 }
 
 /* Waiting / empty state */

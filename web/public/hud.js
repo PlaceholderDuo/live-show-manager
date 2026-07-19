@@ -38,6 +38,9 @@
   var soloGrid = $("soloGrid");
   var soloProgressFill = $("soloProgressFill");
 
+  var gapProgress = $("gapProgress");
+  var gapProgressFill = $("gapProgressFill");
+
   var timelineNotches = $("timelineNotches");
   var progressFill = $("progressFill");
 
@@ -507,7 +510,7 @@
     if (inSolo) {
       lyricEngine.style.display = "none";
       soloEngine.style.display = "flex";
-      // Show chords from all lines in the solo section
+      gapProgress.style.display = "none";
       soloGrid.innerHTML = "";
       for (var i = currentIdx; i < lines.length; i++) {
         if (lines[i].type !== "solo" && lines[i].type !== lines[currentIdx].type) break;
@@ -520,12 +523,56 @@
           }
         }
       }
-      var pct = Math.min(100, Math.max(0, 100 - (soloRemaining / Math.max(lines[currentIdx]._duration || 16, 1)) * 100));
+      var soloDuration = lines[currentIdx]._duration || 16;
+      var pct = Math.min(100, Math.max(0, 100 - (soloRemaining / Math.max(soloDuration, 1)) * 100));
       soloProgressFill.style.width = pct + "%";
+      var soloRemainEl = document.getElementById("soloRemaining");
+      if (soloRemainEl) soloRemainEl.textContent = Math.max(0, Math.ceil(soloRemaining)) + " bars remaining";
       return;
     } else {
       lyricEngine.style.display = "block";
       soloEngine.style.display = "none";
+    }
+
+    // ── Gap progress: detect if current bar has no matching lyric ──
+    var currentLine = lines[currentIdx];
+    var nextAnnotated = null;
+    for (var gi = currentIdx; gi < lines.length; gi++) {
+      if (lines[gi]._bar !== null && lines[gi]._bar !== undefined && lines[gi]._bar > bar) {
+        nextAnnotated = lines[gi];
+        break;
+      }
+    }
+    var inGap = nextAnnotated && nextAnnotated._bar - bar >= 2 && currentLine && currentLine._bar < bar;
+    // Also detect intro: before the first @bar annotation
+    var firstAnnotBar = null;
+    for (var gi = 0; gi < lines.length; gi++) {
+      if (lines[gi]._bar !== null && lines[gi]._bar !== undefined) {
+        firstAnnotBar = lines[gi]._bar;
+        break;
+      }
+    }
+    var inIntro = firstAnnotBar && bar < firstAnnotBar;
+    var showGap = inGap || inIntro;
+
+    if (showGap) {
+      gapProgress.style.display = "flex";
+      var targetBar = inIntro ? firstAnnotBar : nextAnnotated._bar;
+      var fromBar = inIntro ? 1 : (lines[currentIdx]._bar || 1);
+      var totalBars = targetBar - fromBar;
+      var barsIn = bar - fromBar;
+      var pct2 = Math.min(100, Math.max(0, (barsIn / Math.max(totalBars, 1)) * 100));
+      gapProgressFill.style.width = pct2 + "%";
+      var barsLeft = Math.max(0, targetBar - bar);
+      document.getElementById("gapLabel").textContent = inIntro ? "INTRO" : "INSTRUMENTAL";
+      document.getElementById("gapText").textContent = barsLeft + " bars until lyrics";
+      if (barsLeft <= 2) {
+        gapProgress.classList.add("near");
+      } else {
+        gapProgress.classList.remove("near");
+      }
+    } else {
+      gapProgress.style.display = "none";
     }
 
     // Build array of 6 lines: [past3, past2, past1, present, future1, future2]
