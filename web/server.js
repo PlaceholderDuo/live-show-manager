@@ -328,7 +328,8 @@ const state = {
   activeAmpPreset: "OSD",
   activeScene: 0,
   keysOn: true,
-  mixerValues: {},        // EDM knob values relayed from ReaLearn → REAPER → here
+  mixerValues: {},
+  setlist: [],        // EDM knob values relayed from ReaLearn → REAPER → here
 };
 
 // Per-client context for knob routing
@@ -1134,6 +1135,7 @@ function localJumpToSong(songIdx, songTitle) {
   state.totalSongs = activeSetlist.length || songLibrary.length;
   if (activeSetlist.length > 0) {
     state.nextSong = state.songIndex < activeSetlist.length ? activeSetlist[state.songIndex].title : null;
+    state.setlist = activeSetlist;
   }
   lastSongId = null;
   localPlayOffset = 0;
