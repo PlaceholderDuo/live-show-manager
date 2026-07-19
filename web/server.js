@@ -1649,6 +1649,48 @@ app.post("/api/local/setlist", (req, res) => {
   res.json({ ok: true, count: activeSetlist.length, currentSong: state.currentSong });
 });
 
+// ── Song library endpoint (for iPhone setlist builder) ──
+app.get("/api/library", (req, res) => {
+  ensureSongLibrary();
+  res.json({
+    total: songLibrary.length,
+    songs: songLibrary.map(s => ({ id: s.id, title: s.title, artist: s.artist, key: s.key, bpm: s.bpm })),
+  });
+});
+
+// ── Add/remove songs from active setlist ──
+app.post("/api/local/setlist/add", (req, res) => {
+  const title = req.body && req.body.title;
+  if (!title) return res.json({ ok: false, error: "title required" });
+  if (!activeSetlist.find(s => s.title === title)) {
+    activeSetlist.push({ title });
+    state.totalSongs = activeSetlist.length;
+    state.setlist = activeSetlist;
+    if (activeSetlist.length === 1) {
+      localJumpToSong(1, title);
+    }
+    broadcastState();
+    res.json({ ok: true, count: activeSetlist.length });
+  } else {
+    res.json({ ok: false, error: "already in setlist" });
+  }
+});
+
+app.post("/api/local/setlist/remove", (req, res) => {
+  const title = req.body && req.body.title;
+  if (!title) return res.json({ ok: false, error: "title required" });
+  const idx = activeSetlist.findIndex(s => s.title === title);
+  if (idx >= 0) {
+    activeSetlist.splice(idx, 1);
+    state.totalSongs = activeSetlist.length;
+    state.setlist = activeSetlist;
+    broadcastState();
+    res.json({ ok: true, count: activeSetlist.length });
+  } else {
+    res.json({ ok: false, error: "not in setlist" });
+  }
+});
+
 // ── ChordPro file endpoint ──
 // Returns the raw ChordPro text for a song, or 404.
 app.get("/api/chordpro/:songId", (req, res) => {
