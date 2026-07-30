@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Live Stage HUD</title>
+<link rel="stylesheet" href="/hud.css">
+</head>
+<body class="hud">
+
+  <div id="edgeFlashTop" class="edge-flash"></div>
+  <div id="edgeFlashBottom" class="edge-flash"></div>
+  <div id="heartbeatBanner" class="heartbeat-banner" style="display:none;">SIGNAL LOST — CHECK SERVER</div>
+
+  <div id="hudGrid">
+
+    <!-- ── 1. GLOBAL HEADER — Compact left metadata & High-Contrast Conductor ── -->
+    <header id="hudHeader">
+      <div id="headerLeft">
+        <div class="meta-row-clean"><span>SONG: </span><span id="topTitle">—</span></div>
+        <div class="meta-row-clean"><span>KEY: </span><span id="topKey">—</span></div>
+        <div class="meta-row-clean"><span>BPM: </span><span id="topBpm">—</span></div>
+        <div class="meta-row-clean"><span>NEXT: </span><span id="topNextVal">—</span></div>
+      </div>
+      
+      <!-- Live Conductor Bar & Beat Counter -->
+      <div id="conductorContainer">
+        <span id="barCounter">BAR: 1</span>
+        <span id="beatDivider">|</span>
+        <span id="beatCounter">
+          <span class="beat-node" id="beat1">1</span>
+          <span class="beat-node" id="beat2">2</span>
+          <span class="beat-node" id="beat3">3</span>
+          <span class="beat-node" id="beat4">4</span>
+        </span>
+      </div>
+
+      <div id="headerRight">
+        <div id="connectionStatus">Connected</div>
+      </div>
+    </header>
+
+    <!-- ── 2. METRO MAP TIMELINE — Horizontal train of blocks ── -->
+    <nav id="hudSections">
+      <div id="metroMap" class="metro-map"></div>
+    </nav>
+
+    <!-- ── 3. PERFORMANCE ZONE — Rolling Lyrics Engine ── -->
+    <main id="hudLyrics">
+      
+      <!-- Rolling Lyrics Engine (6-line display) -->
+      <div id="lyricEngine" class="lyric-engine">
+        <div id="currentSectionLabel"></div>
+        <div id="linePast3" class="tp-line past-3"></div>
+        <div id="linePast2" class="tp-line past-2"></div>
+        <div id="linePast1" class="tp-line past-1"></div>
+        <div id="linePresent" class="tp-line present"></div>
+        <div id="lineFuture1" class="tp-line future-1"></div>
+        <div id="lineFuture2" class="tp-line future-2"></div>
+        <div id="futureSectionLabel"></div>
+      </div>
+
+      <!-- Solo Protocol Engine -->
+      <div id="soloEngine" class="solo-engine" style="display:none;">
+        <div id="soloGrid" class="solo-grid"></div>
+        <div class="solo-progress-bar">
+          <div id="soloProgressFill" class="solo-progress-fill"></div>
+        </div>
+        <div id="soloRemaining" class="solo-remaining-text"></div>
+        <div class="solo-cue">SOLO MEASURES</div>
+      </div>
+
+      <!-- Instrumental / Gap Progress Bar -->
+      <div id="gapProgress" class="gap-progress" style="display:none;">
+        <div class="gap-progress-label" id="gapLabel">INSTRUMENTAL</div>
+        <div class="gap-progress-bar">
+          <div id="gapProgressFill" class="gap-progress-fill"></div>
+        </div>
+        <div class="gap-progress-text" id="gapText">Next lyric in 4 bars</div>
+      </div>
+
+      <div id="hudNotes" class="notes-bar"></div>
+    </main>
+
+    <!-- ── 3.5 AUDIO METERS — Thin strip for track level visualization ── -->
+    <div id="meterRow" class="meter-row"></div>
+
+    <!-- ── 4. STATUS ANCHOR — Master progress bar + notches + Next Song ── -->
+    <footer id="hudFooter">
+      <div id="footerCenter">
+        
+        <!-- Timeline and notches -->
+        <div id="timelineContainer">
+          <div id="timelineNotches"></div>
+          <div id="progressContainer">
+            <div id="progressFill"></div>
+          </div>
+        </div>
+
+        <div id="footerTimeRow">
+          <span id="footerElapsed">0:00</span>
+          <span id="footerTotal">0:00</span>
+        </div>
+
+        <!-- Centered Pro Next Song Badge -->
+        <div id="bottomNextContainer">
+          <div id="bottomNextBadge">NEXT: <span id="nextSong">—</span></div>
+        </div>
+      </div>
+
+      <div id="footerRight">
+        <div id="footerStatus" class="status-dot">
+          <span id="metronomeDot"></span>
+          <span id="statusText">&#9679; Disconnected</span>
+        </div>
+        <div id="footerSection"></div>
+      </div>
+    </footer>
+
+  </div>
+
+  <div id="debugOverlay" style="display:none; position:fixed; bottom:0; left:0; right:0; height:140px; background:rgba(0,0,0,0.92); border-top:1px solid #333; z-index:999; font-family:monospace; font-size:10px; color:#aaa; padding:8px 12px; overflow-y:auto;">
+    <div style="display:flex; gap:16px; margin-bottom:4px;">
+      <span>DEBUG MODE</span>
+      <span id="dbgBar"></span>
+      <span id="dbgAnnotated"></span>
+      <span id="dbgEstimated"></span>
+    </div>
+    <div id="dbgTimeline" style="position:relative; height:18px; background:#111; border-radius:3px; margin:4px 0 8px; overflow:hidden;"></div>
+    <div id="dbgLines" style="max-height:60px; overflow-y:auto;"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/hud.js"></script>
+</body>
+</html>

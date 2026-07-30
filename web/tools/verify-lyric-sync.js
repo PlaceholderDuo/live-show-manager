@@ -93,30 +93,69 @@ function similarity(a, b) {
   return common / Math.max(wa.length, wb.length);
 }
 
-// ── Parse chopro: extract lyric lines with @time=N / @bar=N ──
+// ── Parse chopro: extract lyric lines with timing annotations ──
+// Handles BOTH old and new chopro formats:
+//   OLD: @time=3.52 @bar=3  [D]Well, she was an American girl
+//        {start_of_verse: Verse 1} ... {end_of_verse}
+//   NEW: ## Verse 1 @3.52
+//          [D]Well, she was an American girl @3.52
+//          /Bb/Eb Dm7 Gm/
 function parseChoproLines(text) {
   const lines = text.split("\n");
   const lyricLines = [];
+
+  function isNewFormat() {
+    for (const l of lines) {
+      if (/^\s*##\s/.test(l)) return true;
+    }
+    return false;
+  }
+  const newFormat = isNewFormat();
+
   for (const raw of lines) {
     const trimmed = raw.trim();
-    if (!trimmed || isDirective(trimmed)) continue;
+    if (!trimmed) continue;
+
+    // Metadata directives
+    if (/^\{/.test(trimmed)) continue;
+
+    // New format: ## section headers
+    if (/^##\s/.test(trimmed)) continue;
+
+    // Bare chord markers: /chords/
+    if (/^\/.+\/$/.test(trimmed)) continue;
+
+    // Detect bare chord lines (no markers)
     if (isBareChord(trimmed)) continue;
 
-    // Extract @time=N (preferred) and @bar=N (legacy)
+    // Extract timing: try old prefix format first, then new trailing format
     let time = null;
     let bar = null;
 
-    const timeMatch = trimmed.match(/@time\s*=\s*([\d]+\.?\d*)/i);
-    if (timeMatch) {
-      time = parseFloat(timeMatch[1]);
+    const oldTimeMatch = trimmed.match(/@time\s*=\s*([\d]+\.?\d*)/i);
+    if (oldTimeMatch) {
+      time = parseFloat(oldTimeMatch[1]);
     }
 
-    const barMatch = trimmed.match(/@bar\s*=\s*(\d+)/i);
-    if (barMatch) {
-      bar = parseInt(barMatch[1], 10);
+    const oldBarMatch = trimmed.match(/@bar\s*=\s*(\d+)/i);
+    if (oldBarMatch) {
+      bar = parseInt(oldBarMatch[1], 10);
+    }
+
+    // If no old-format @time found, try new trailing @N.N
+    if (time === null) {
+      const trailMatch = trimmed.match(/\s@([\d]+\.?\d{1,2})\s*$/);
+      if (trailMatch) time = parseFloat(trailMatch[1]);
     }
 
     let clean = stripChords(trimmed);
+    // Strip old-format annotations from text
+    clean = clean.replace(/@time\s*=\s*[\d]+\.?\d*/gi, "").trim();
+    clean = clean.replace(/@bar\s*=\s*\d+/gi, "").trim();
+    // Strip new-format trailing @N.N
+    clean = clean.replace(/\s@[\d]+\.?\d{1,2}\s*$/g, "").trim();
+    // Strip any remaining @\w+=\S+
+    clean = clean.replace(/@\w+=\S+/g, "").trim();
     clean = stripEmoji(clean).trim();
     if (!clean) continue;
     if (/^(song|artist|tuning|capo|tabbed|standard|no chords|let ring|palm mute)[:\s]/i.test(clean.toLowerCase())) continue;
@@ -126,7 +165,7 @@ function parseChoproLines(text) {
   return lyricLines;
 }
 
-// ── Parse chopro section boundaries from directives ──
+// ── Parse chopro section boundaries from directives + ## headers ──
 function parseChoproSections(text) {
   const lines = text.split("\n");
   const sections = [];
@@ -142,9 +181,39 @@ function parseChoproSections(text) {
     inSection = false;
   }
 
+  function detectType(label) {
+    const ll = (label || "").toLowerCase();
+    if (ll.includes("intro")) return "intro";
+    if (ll.includes("outro")) return "outro";
+    if (ll.includes("chorus")) return "chorus";
+    if (ll.includes("bridge")) return "bridge";
+    if (ll.includes("solo")) return "solo";
+    if (ll.includes("pre-chorus") || ll.includes("prechorus")) return "pre-chorus";
+    if (ll.includes("interlude")) return "interlude";
+    return "verse";
+  }
+
   for (const raw of lines) {
     const t = raw.trim();
     if (!t) continue;
+
+    // NEW format: ## Section Name @seconds
+    if (/^##\s/.test(t)) {
+      flush();
+      const headerMatch = t.match(/^##\s+(.+?)(?:\s+@([\d]+\.?\d*))?\s*$/);
+      if (headerMatch) {
+        const label = headerMatch[1].trim();
+        currentLabel = label;
+        currentType = detectType(label);
+      } else {
+        currentLabel = t.replace(/^##\s+/, "").trim();
+        currentType = detectType(currentLabel);
+      }
+      inSection = true;
+      continue;
+    }
+
+    // OLD format: {start_of_*} / {end_of_*} directives
     if (t.startsWith("{")) {
       if (/^\{end_of_/i.test(t)) { flush(); continue; }
       const m = t.match(/^\{([^:]+)(?::\s*(.+))?\}$/);
@@ -161,21 +230,31 @@ function parseChoproSections(text) {
       else if (name.includes("start_of_interlude")) { flush(); currentType = "interlude"; currentLabel = val || "Interlude"; inSection = true; }
       continue;
     }
+
+    // Content line — skip bare chords and metadata
+    if (isBareChord(t)) continue;
+    if (/^\/.+\/$/.test(t)) continue;  // new format bare chord markers
+    if (/^(song|artist|tuning|capo|tabbed|standard|no chords|let ring|palm mute)[:\s]/i.test(t.toLowerCase())) continue;
+
+    // Accumulate cleaned content for section
     if (inSection) {
+      const cleaned = stripEmoji(stripChords(t)).trim();
+      if (cleaned) currentLines.push(cleaned);
+    } else {
+      // Auto-start section for orphan lines
+      inSection = true;
+      currentLabel = currentLabel || "Section";
+      currentType = detectType(currentLabel);
       const cleaned = stripEmoji(stripChords(t)).trim();
       if (cleaned) currentLines.push(cleaned);
     }
   }
   flush();
 
-  // Refine types from labels
+  // Refine types from labels (handles OLD format label mismatches)
   for (const s of sections) {
-    const ll = (s.label || "").toLowerCase();
-    if (ll.includes("intro") && s.type === "verse") s.type = "intro";
-    else if (ll.includes("outro") && s.type === "verse") s.type = "outro";
-    else if (ll.includes("bridge") && s.type === "verse") s.type = "bridge";
-    else if (ll.includes("solo") && s.type === "verse") s.type = "solo";
-    else if ((ll.includes("pre-chorus") || ll.includes("prechorus")) && s.type === "verse") s.type = "pre-chorus";
+    const refined = detectType(s.label);
+    if (refined !== "verse") s.type = refined;
   }
 
   return sections;

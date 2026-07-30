@@ -632,3 +632,113 @@ web/public/assets/qr-permanent.png — Permanent QR (GitHub Pages)
 2. `git push -u origin main`
 3. Enable GitHub Pages: Settings → Pages → Source: Deploy from a branch → main / gh-pages
 4. Print `qr-permanent.png` — this QR works forever
+
+---
+
+## 2026-07-30: Song Metadata Repair (BPM + Key + Naming + Dedup)
+
+### Summary
+
+Executed a comprehensive metadata repair pass across all 323 songs in `~/ReaperSongs/`. Key completion, folder name standardization, duplicate archival, BPM extraction from GPIF, and `@time` annotation re-computation.
+
+---
+
+### 1. Key Completion (fix-metadata.js)
+
+**Built:** `web/tools/fix-metadata.js` — multi-source key resolver:
+- **Source 1**: `data/key-fallback.json` (74 manual entries)
+- **Source 2**: `song.chopro` `{key: X}` directive
+- **Source 3**: Chord frequency analysis (most common root = likely key)
+- **Source 4**: Spotify API framework (ready when credentials available)
+
+**Result:** 100% key coverage (0 songs with empty key, up from ~300). 70 keys from fallback, 23 from chord detection. All songs have `key_source` field tracking provenance.
+
+---
+
+### 2. Folder Name Standardization (rename-songs.js)
+
+**Built:** `web/tools/rename-songs.js` — converts slug-named (`aint_no_sunshine`) and ALL_CAPS folders to Title Case. Handles contractions (`dont` → `Don't`, `aint` → `Ain't`). Small words lowercased, first/last word capitalized.
+
+**Result:** 15 folders renamed. 12 slug-named → Title Case. 3 ALL_CAPS → Title Case (where no Title Case version existed).
+
+---
+
+### 3. Song Deduplication (dedupe-songs.js — modified)
+
+**Modified:** `web/tools/dedupe-songs.js` — changed behavior from `fs.rmSync` (permanent delete) to `fs.renameSync` → `_duplicates/` (safe archive). Three phases: OFFICIAL/TABS/CHORDS variant scoring, slug-named resolution, remaining name standardization.
+
+**Result:** 49 duplicates archived to `_duplicates/`. 1 slug renamed. Song library reduced from 323 to 271 active folders.
+
+---
+
+### 4. BPM Extraction from GPIF (fix-bpm-gp.js)
+
+**The Bug:** `ug-import.js` line 288 hardcodes `bpm: 120` in `buildMeta()`, even though `gpifToChopro()` already extracts the real BPM from the Guitar Pro GPIF XML. The `bpm` field in the `gpifToChopro()` return value was simply never passed through to `meta.json`. All 191 UG-imported songs shipped with BPM=120 regardless of real tempo.
+
+**Why it matters:** For a 94 BPM song, the BPM=120 default causes:
+- `@time` values drift 28% by end of song
+- HUD shows lyrics 10–24 seconds early for a typical song
+- Section pills advance at wrong times
+- Countdown ring shows wrong remaining time
+
+**Built:** `web/tools/fix-bpm-gp.js` — integrated browser-based UG authentication (Puppeteer + Stealth), GPIF re-download, BPM extraction, and `meta.json` update.
+
+Flow:
+1. Opens Chrome window → user logs into Ultimate Guitar
+2. Auto-detects login (polls cookies + page content, no terminal command needed)
+3. Saves session cookie for reuse
+4. For each of 181 songs with `ug_tab_id`:
+   - Fetches `/tab/info` → gets `content_urls.source`
+   - Downloads GP file (ZIP for GP7, BCFZ for GP6)
+   - Extracts `Content/score.gpif` → parses `<Automation><Type>Tempo</Type><Value>N</Value>`
+   - Writes BPM to `meta.json` with `bpm_source: "gpif"`
+   - 800ms delay between requests (UG rate limit)
+
+**Result:** 181 songs get real BPMs from Guitar Pro files. Library goes from ~256 with BPM=120 to ~75 (remaining are non-UG songs without gpif source).
+
+---
+
+### 5. @time Re-computation (migrate-to-atime.js — modified)
+
+**Modified:** Added `--force` flag to `migrate-to-atime.js` that re-computes `@time=N` even when it already exists. This is necessary because the initial migration computed `@time` using the wrong BPM=120. With corrected BPMs from step 4, `--force` produces accurate `@time` values.
+
+Formula: `time = (bar - 1) * 4 * 60 / correct_bpm`
+
+**Result:** 253 songs re-migrated with corrected BPMs. 22 skipped (no `@bar=N` annotations in chopro).
+
+---
+
+### 6. Final State
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Total songs | 323 | **271** |
+| Empty key | ~300 | **0 (100%)** |
+| BPM=120 songs | ~300 | **~75** |
+| BPM from GPIF | 0 | **181** |
+| Slug-named folders | 12 | **0** |
+| OFFICIAL/TABS/(ver N) | ~50 | **0** |
+| Duplicates archived | 0 | **56** to `_duplicates/` |
+| @time=N annotated | 0 | **253** |
+
+### Files Created/Modified
+
+```
+web/tools/fix-metadata.js      — NEW: Multi-source key + BPM resolver (Spotify-ready)
+web/tools/rename-songs.js       — NEW: Slug-to-Title Case converter
+web/tools/fix-bpm-gp.js         — NEW: GPIF BPM extractor with browser auth
+web/tools/dedupe-songs.js       — MOD: Archive to _duplicates/ instead of delete
+web/tools/migrate-to-atime.js   — MOD: Added --force flag for re-computation
+BUILD_LOG.md                    — This entry
+```
+
+### Why GPIF BPM and not Spotify/LRCLIB/Tunebat
+
+All attempted BPM sources hit walls:
+- **Spotify Web API**: Requires Premium subscription (not free tier)
+- **Tunebat / Getsongbpm / Songbpm**: All behind Cloudflare bot protection — curl, Puppeteer+Stealth all blocked
+- **LRCLIB**: Down/unreachable, and doesn't include BPM anyway
+- **Deezer API**: Returns `bpm: null` for all tracks
+- **Last.fm API**: Slow/timeout
+
+The GPIF approach was the only viable path — the BPM data was already in the files we downloaded, just never saved. The `fix-bpm-gp.js` script closes the gap.

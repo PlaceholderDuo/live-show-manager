@@ -491,6 +491,7 @@ function extractLyricLines(choproText) {
     let bar = null;
     let clean = stripChords(trimmed);
 
+    // Old prefix format: @time=N @bar=N
     const timeMatch = clean.match(/@time\s*=\s*([\d]+\.?\d*)/i);
     if (timeMatch) {
       time = parseFloat(timeMatch[1]);
@@ -501,6 +502,15 @@ function extractLyricLines(choproText) {
     if (barMatch) {
       bar = parseInt(barMatch[1], 10);
       clean = clean.replace(/@bar\s*=\s*\d+/i, "");
+    }
+
+    // New format trailing @N.N (after stripping @time/@bar, before stripping remaining)
+    if (time === null) {
+      const trailMatch = clean.match(/\s@([\d]+\.?\d{1,2})\s*$/);
+      if (trailMatch) {
+        time = parseFloat(trailMatch[1]);
+        clean = clean.replace(/\s@[\d]+\.?\d{1,2}\s*$/, "");
+      }
     }
 
     // Strip any remaining @\w+=\S+ annotations
@@ -869,6 +879,21 @@ function broadcastState() {
   io.emit("state", payload);
 }
 
+function computeCurrentLyricLine() {
+  if (!state.lyricLines || state.lyricLines.length === 0) {
+    state.currentLineIdx = null;
+    return;
+  }
+  var pos = state.position || 0;
+  var best = 0;
+  for (var i = 0; i < state.lyricLines.length; i++) {
+    if (state.lyricLines[i].time !== null && state.lyricLines[i].time !== undefined && state.lyricLines[i].time <= pos) {
+      best = i + 1;
+    }
+  }
+  state.currentLineIdx = best > 0 ? best : null;
+}
+
 oscPort.on("ready", () => {
   console.log(`[OSC] Listening on port ${OSC_IN_PORT}, sending to ${OSC_OUT_HOST}:${OSC_OUT_PORT}`);
 });
@@ -964,12 +989,48 @@ let songLibrary = [];
 let songLibraryScanned = false;
 let activeSetlist = []; // ordered array of {title} from TUI
 
+const SESSION_SETLIST_PATH = path.join(__dirname, "..", "data", "setlists", "_last_session.json");
+
+function saveSessionSetlist() {
+  try {
+    if (activeSetlist.length > 0) {
+      const data = {
+        name: "_last_session",
+        songs: activeSetlist.map(s => ({ title: s.title, artist: s.artist || "" })),
+        savedAt: new Date().toISOString(),
+        autoSaved: true,
+      };
+      fs.writeFileSync(SESSION_SETLIST_PATH, JSON.stringify(data, null, 2), "utf-8");
+    }
+  } catch (err) {
+    // silently ignore — session persistence is best-effort
+  }
+}
+
+function loadSessionSetlist() {
+  try {
+    if (fs.existsSync(SESSION_SETLIST_PATH)) {
+      const data = JSON.parse(fs.readFileSync(SESSION_SETLIST_PATH, "utf-8"));
+      if (data.songs && data.songs.length > 0) {
+        setActiveSetlist(data.songs);
+        console.log(`[Setlist] Restored session: ${activeSetlist.length} songs (saved ${data.savedAt})`);
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn("[Setlist] Could not restore session:", err.message);
+  }
+  return false;
+}
+
 function setActiveSetlist(songs) {
   if (!Array.isArray(songs) || songs.length === 0) return;
   activeSetlist = songs.filter(s => s && s.title);
   state.totalSongs = activeSetlist.length;
   state.songIndex = 1;
+  state.setlist = activeSetlist;
   console.log(`[Setlist] Active: ${activeSetlist.length} songs`);
+  saveSessionSetlist();
 }
 
 function ensureSongLibrary() {
@@ -1268,11 +1329,11 @@ function pollLuaState() {
           state.currentArtist = luaState.currentArtist || state.currentArtist;
           state.trackLevels = luaState.trackLevels || state.trackLevels;
           state.loopStates = luaState.loopStates || state.loopStates;
-          state.regions = luaState.regions || state.regions;
-          state.position = luaState.position !== undefined && luaState.playing !== undefined
-            ? luaState.position : state.position;
-          state.playing = luaState.playing !== undefined ? luaState.playing : state.playing;
-          state.connected = true;
+      state.regions = luaState.regions || state.regions;
+      state.position = luaState.position !== undefined && luaState.playing !== undefined
+        ? luaState.position : state.position;
+      state.playing = luaState.playing !== undefined ? luaState.playing : state.playing;
+      state.connected = true;
 
           if (luaState.fxData) io.emit("fxData", luaState.fxData);
           if (luaState.trackLevels) io.emit("trackLevels", luaState.trackLevels);
@@ -1281,6 +1342,9 @@ function pollLuaState() {
         } else {
           state.connected = false;
         }
+
+        // Compute current lyric line index from server-parsed lyric lines
+        computeCurrentLyricLine();
 
         // On song change, compute sections from meta.json + ChordPro directives
         if (luaState.songId && luaState.songId !== lastSongId) {
@@ -1738,6 +1802,7 @@ app.post("/api/local/setlist", (req, res) => {
   if (activeSetlist.length > 0) {
     localJumpToSong(1, activeSetlist[0].title);
   }
+  saveSessionSetlist();
   res.json({ ok: true, count: activeSetlist.length, currentSong: state.currentSong });
 });
 
@@ -1761,6 +1826,7 @@ app.post("/api/local/setlist/add", (req, res) => {
     if (activeSetlist.length === 1) {
       localJumpToSong(1, title);
     }
+    saveSessionSetlist();
     broadcastState();
     res.json({ ok: true, count: activeSetlist.length });
   } else {
@@ -1776,6 +1842,7 @@ app.post("/api/local/setlist/remove", (req, res) => {
     activeSetlist.splice(idx, 1);
     state.totalSongs = activeSetlist.length;
     state.setlist = activeSetlist;
+    saveSessionSetlist();
     broadcastState();
     res.json({ ok: true, count: activeSetlist.length });
   } else {
@@ -1835,6 +1902,7 @@ app.post("/api/local/setlist/load", (req, res) => {
     if (activeSetlist.length > 0) {
       localJumpToSong(1, activeSetlist[0].title);
     }
+    saveSessionSetlist();
     res.json({ ok: true, name: data.name, count: activeSetlist.length, currentSong: state.currentSong });
   } catch (e) {
     res.json({ ok: false, error: "Failed to read setlist file" });
@@ -2109,6 +2177,10 @@ app.get("/api/discover", (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   const ip = getLanIP();
   const bonjour = getBonjourHostname();
+
+  // Restore session setlist on startup
+  loadSessionSetlist();
+  ensureSongLibrary();
 
   // Register Bonjour service so iOS can discover via mDNS hostname resolution
   let bonjourSvc = null;

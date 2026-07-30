@@ -27,6 +27,7 @@ const os = require("os");
 const SONGS_DIR = path.join(os.homedir(), "ReaperSongs");
 const args = process.argv.slice(2);
 const isDryRun = args.includes("--dry-run") || args.includes("--dry");
+const isForce = args.includes("--force");
 const specificSong = (() => {
   const idx = args.indexOf("--song");
   if (idx < 0 || !args[idx + 1]) return null;
@@ -58,8 +59,8 @@ function processSong(folderName) {
 
   let content = fs.readFileSync(choproPath, "utf-8");
 
-  if (content.includes("@time=")) return { status: "skip", reason: "already has @time=N" };
-  if (!content.includes("@bar=")) return { status: "skip", reason: "no @bar=N to migrate" };
+  if (content.includes("@time=") && !isForce) return { status: "skip", reason: "already has @time=N" };
+  if (!content.includes("@bar=") && !/@\d+/.test(content)) return { status: "skip", reason: "no @bar=N to migrate" };
 
   const bpm = meta.bpm || 120;
   const beatsPerBar = (meta.time_sig && meta.time_sig[0]) || 4;
@@ -68,7 +69,11 @@ function processSong(folderName) {
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
-    const barMatch = raw.match(/@bar\s*=\s*(\d+)/i);
+    let barMatch = raw.match(/@bar\s*=\s*(\d+)/i);
+    if (!barMatch) {
+      // Handle bare @N format (e.g. "lyric text @42")
+      barMatch = raw.match(/(?:^|\s)@(\d+)(?:\s|$)/);
+    }
     if (!barMatch) continue;
 
     const bar = parseInt(barMatch[1], 10);
@@ -80,9 +85,14 @@ function processSong(folderName) {
     // Skip if the line is a directive
     if (/^\{/.test(raw.trimStart())) continue;
 
-    // Prepend @time=N, replace old @bar location
+    // Prepend @time=N, replace old @time/@bar/@N location
     const indent = raw.match(/^\s*/)[0];
-    const contentLine = raw.trim().replace(/^@bar\s*=\s*\d+\s*/i, "").trim();
+    const contentLine = raw.trim()
+      .replace(/^@time\s*=\s*[\d.]+ @bar\s*=\s*\d+\s*/i, "")  // force mode: old combined
+      .replace(/^@time\s*=\s*[\d.]+\s+/i, "")                   // force mode: bare @time
+      .replace(/^@bar\s*=\s*\d+\s*/i, "")                       // normal: @bar
+      .replace(/(?:^|\s)@\d+(?=\s|$)/g, "")                      // bare @N format
+      .trim();
 
     if (contentLine) {
       lines[i] = `${indent}@time=${timeStr} @bar=${bar}  ${contentLine}`;
