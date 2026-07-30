@@ -15,6 +15,7 @@ const os = require("os");
 const SONGS_DIR = path.join(os.homedir(), "ReaperSongs");
 const LRCLIB_BASE = "lrclib.net";
 const REQ_DELAY_MS = 1500;
+const isForce = process.argv.includes("--force");
 
 function httpGetJson(host, path, retries) {
   if (retries === undefined) retries = 2;
@@ -160,11 +161,9 @@ function processSongChopro(songDir, meta, lrcLines) {
   const choproPath = path.join(songDir, "song.chopro");
   if (!fs.existsSync(choproPath)) { console.log("  SKIP: no song.chopro"); return false; }
   let content = fs.readFileSync(choproPath, "utf-8");
-  if (content.includes("@bar=")) { console.log("  SKIP: already has @bar=N"); return false; }
+  if (content.includes("@time=")) { console.log("  SKIP: already has @time=N"); return false; }
 
   const lines = content.split("\n");
-  const bpm = meta.bpm || 120;
-  const beatsPerBar = (meta.time_sig && meta.time_sig[0]) || 4;
 
   // Build chordpro plain text array
   const chordproPlain = [];
@@ -179,27 +178,37 @@ function processSongChopro(songDir, meta, lrcLines) {
   const matches = tryMatch(chordproPlain, chordproOrig, lrcLines);
   if (matches.length === 0) { console.log("  SKIP: no LRC matches"); return false; }
 
-  // Apply @bar=N from back to front to preserve line indices
-  const barPerLine = {};
+  // Build per-line timing from LRC matches
+  // @time=N stores the LRC timestamp in seconds (ground truth, no BPM dependency)
+  // @bar=N also written as legacy fallback for clients that don't support @time yet
+  const timePerLine = {};
+  const beatsPerBar = (meta.time_sig && meta.time_sig[0]) || 4;
+  const bpm = meta.bpm || 120;
   for (const m of matches) {
-    const bar = timeToBar(m.lrcLine.time, bpm, beatsPerBar);
-    if (bar !== null) barPerLine[m.chordproIdx] = { bar, time: m.lrcLine.time, text: m.lrcLine.text };
+    const lrcTime = m.lrcLine.time; // seconds from LRC (ground truth)
+    const bar = timeToBar(lrcTime, bpm, beatsPerBar);
+    timePerLine[m.chordproIdx] = { time: lrcTime, bar: bar, text: m.lrcLine.text };
   }
 
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (barPerLine[i]) {
-      const info = barPerLine[i];
+    if (timePerLine[i]) {
+      const info = timePerLine[i];
       const indent = lines[i].match(/^\s*/)[0];
-      const contentLine = lines[i].trim();
-      if (contentLine && !isDirective(contentLine) && !contentLine.startsWith("@bar=")) {
-        lines[i] = `${indent}@bar=${info.bar}  ${contentLine}`;
+      let contentLine = lines[i].trim();
+      if (contentLine && !isDirective(contentLine)) {
+        // Strip existing annotations to replace with fresh ones
+        contentLine = contentLine.replace(/^@time\s*=\s*[\d]+\.?\d*\s*/i, "").trim();
+        contentLine = contentLine.replace(/^@bar\s*=\s*\d+\s*/i, "").trim();
+        if (contentLine) {
+          lines[i] = `${indent}@time=${info.time.toFixed(2)} @bar=${info.bar}  ${contentLine}`;
+        }
       }
     }
   }
 
   const newContent = lines.join("\n");
   fs.writeFileSync(choproPath, newContent, "utf-8");
-  console.log(`  WROTE @bar=N for ${matches.length} lines (${Object.keys(barPerLine).length} unique)`);
+  console.log(`  WROTE @time=N for ${matches.length} lines (${Object.keys(timePerLine).length} unique)`);
   return true;
 }
 
@@ -208,43 +217,60 @@ async function processSong(folderName) {
   const metaPath = path.join(songDir, "meta.json");
   if (!fs.existsSync(metaPath)) { console.log(`SKIP ${folderName}: no meta.json`); return; }
 
+  // Skip if already annotated (avoid wasted API call)
+  const choproPath = path.join(songDir, "song.chopro");
+  if (fs.existsSync(choproPath)) {
+    const c = fs.readFileSync(choproPath, "utf-8");
+    if (c.includes("@time=")) { console.log(`SKIP ${folderName}: already has @time=N`); return; }
+    if (c.includes("@bar=") && !isForce) { console.log(`SKIP ${folderName}: has @bar=N (pass --force to upgrade to @time=N)`); return; }
+    if (c.includes("@bar=") && isForce) { console.log(`  Upgrading @bar→@time for ${folderName}...`); }
+  }
+
   let meta;
   try { meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch { console.log(`SKIP ${folderName}: bad meta.json`); return; }
   if (!meta.title && !meta.artist) { console.log(`SKIP ${folderName}: no title/artist in meta`); return; }
 
-  const artist = encodeURIComponent((meta.artist || "").trim());
-  const title = encodeURIComponent((meta.title || folderName).trim());
-  const apiPath = `/api/get?artist_name=${artist}&track_name=${title}`;
+  // Normalize title — strip import artifacts like "OFFICIAL ... TABS", "CHORDS (ver N)"
+  const rawTitle = meta.title || folderName;
+  const cleanTitle = rawTitle
+    .replace(/^OFFICIAL\s+/i, "")
+    .replace(/\s+TABS$/i, "")
+    .replace(/\s+CHORDS\s*\(\s*ver\s+\d+\s*\)$/i, "")
+    .replace(/\s+\(ver\s+\d+\)$/i, "")
+    .replace(/\s+ver\s+\d+$/i, "")
+    .trim();
+  const useCleaned = cleanTitle !== rawTitle;
 
-  console.log(`\n${folderName} — ${meta.artist} "${meta.title}"`);
+  const artist = encodeURIComponent((meta.artist || "").trim());
+
+  async function tryFetchLRC(titleStr) {
+    const titleEnc = encodeURIComponent(titleStr.trim());
+    const apiPath = `/api/get?artist_name=${artist}&track_name=${titleEnc}`;
+    let data = await httpGetJson(LRCLIB_BASE, apiPath);
+    if (!data) {
+      const searchQ = encodeURIComponent(`${meta.artist || ""} ${titleStr}`);
+      console.log(`  No direct match, searching...`);
+      let searchData;
+      try {
+        searchData = await httpGetJson(LRCLIB_BASE, `/api/search?q=${searchQ}`);
+      } catch (e) { return null; }
+      if (!searchData || !Array.isArray(searchData) || searchData.length === 0) return null;
+      try {
+        data = await httpGetJson(LRCLIB_BASE, `/api/get/${searchData[0].id}`);
+      } catch (e) { return null; }
+    }
+    return data;
+  }
+
+  console.log(`\n${folderName} — ${meta.artist} "${rawTitle}"`);
   console.log(`  Fetching LRCLIB...`);
 
-  let data;
-  try {
-    data = await httpGetJson(LRCLIB_BASE, apiPath);
-  } catch (e) {
-    console.log(`  ERROR: ${e.message}`);
-    return;
+  let data = await tryFetchLRC(rawTitle);
+  if (!data && useCleaned) {
+    console.log(`  Trying cleaned title "${cleanTitle}"...`);
+    data = await tryFetchLRC(cleanTitle);
   }
-  if (!data) {
-    // Fallback: search by query (handles case mismatches, parenthetical notes, etc.)
-    const searchQ = encodeURIComponent(`${meta.artist || ""} ${meta.title || folderName}`);
-    console.log(`  No direct match, searching...`);
-    let searchData;
-    try {
-      searchData = await httpGetJson(LRCLIB_BASE, `/api/search?q=${searchQ}`);
-    } catch (e) { console.log(`  Search error: ${e.message}`); return; }
-    if (!searchData || !Array.isArray(searchData) || searchData.length === 0) {
-      console.log(`  No LRCLIB entry (direct + search)`);
-      return;
-    }
-    data = searchData[0];
-    // Re-fetch by ID to get synced lyrics (search results don't include syncedLyrics)
-    try {
-      data = await httpGetJson(LRCLIB_BASE, `/api/get/${data.id}`);
-    } catch (e) { console.log(`  Fetch by ID error: ${e.message}`); return; }
-  }
-  if (!data) { console.log(`  No LRCLIB entry`); return; }
+  if (!data) { console.log(`  No LRCLIB entry (direct + search)`); return; }
   if (!data.syncedLyrics) { console.log(`  No synced lyrics (plain lyrics only)`); return; }
 
   const lrcLines = parseLRC(data.syncedLyrics);
@@ -259,6 +285,8 @@ async function main() {
   const runAll = args.includes("--all");
   const singleIdx = args.indexOf("--song");
   const singleSong = singleIdx !== -1 && args[singleIdx + 1] ? args.slice(singleIdx + 1).join(" ") : null;
+  const limitIdx = args.indexOf("--limit");
+  const limit = limitIdx !== -1 && args[limitIdx + 1] ? parseInt(args[limitIdx + 1], 10) : null;
 
   let songs = fs.readdirSync(SONGS_DIR, { withFileTypes: true })
     .filter(d => d.isDirectory())
@@ -273,20 +301,41 @@ async function main() {
       const cp = path.join(SONGS_DIR, s, "song.chopro");
       if (!fs.existsSync(cp)) return false;
       const c = fs.readFileSync(cp, "utf-8");
-      return !c.includes("@bar=");
+      return !c.includes("@time=") && !c.includes("@bar=");
     });
-    console.log(`\n${unannotated.length} songs without @bar=N annotations.`);
-    console.log("Usage: node tools/lrc-to-bars.js --song \"Folder Name\"");
-    console.log("       node tools/lrc-to-bars.js --all");
+    const hasBarsOnly = songs.filter(s => {
+      const cp = path.join(SONGS_DIR, s, "song.chopro");
+      if (!fs.existsSync(cp)) return false;
+      const c = fs.readFileSync(cp, "utf-8");
+      return !c.includes("@time=") && c.includes("@bar=");
+    });
+    const hasTime = songs.filter(s => {
+      const cp = path.join(SONGS_DIR, s, "song.chopro");
+      if (!fs.existsSync(cp)) return false;
+      const c = fs.readFileSync(cp, "utf-8");
+      return c.includes("@time=");
+    });
+    console.log(`\n${hasTime.length} with @time=N (accurate, BPM-independent)`);
+    console.log(`${hasBarsOnly.length} with @bar=N only (BPM-dependent, needs upgrade)`);
+    console.log(`${unannotated.length} without any timing annotations.`);
+    console.log("\nUsage: node tools/lrc-to-bars.js --song \"Folder Name\"");
+    console.log("       node tools/lrc-to-bars.js --all              # process un-annotated");
+    console.log("       node tools/lrc-to-bars.js --all --force      # also upgrade @bar→@time");
     console.log("       node tools/lrc-to-bars.js [no flags = this help]\n");
-    console.log("First 10 un-annotated:");
-    unannotated.slice(0, 10).forEach(s => console.log(`  "${s}"`));
+    if (hasBarsOnly.length > 0) {
+      console.log(`Run with --force to upgrade ${hasBarsOnly.length} @bar-only songs to @time=N.\n`);
+    }
+    if (unannotated.length > 0) {
+      console.log("First 10 un-annotated:");
+      unannotated.slice(0, 10).forEach(s => console.log(`  "${s}"`));
+    }
     return;
   }
 
   for (let i = 0; i < songs.length; i++) {
     await processSong(songs[i]);
     if (i < songs.length - 1) await new Promise(r => setTimeout(r, REQ_DELAY_MS));
+    if (limit && i + 1 >= limit) { console.log(`\nReached --limit ${limit}. Stopping.`); break; }
   }
 
   console.log(`\nDone. Processed ${songs.length} songs.`);

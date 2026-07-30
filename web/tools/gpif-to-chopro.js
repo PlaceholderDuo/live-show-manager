@@ -314,6 +314,7 @@ function gpifToChopro(gpifXml) {
   // Map chord IDs to lyric lines — each chord ID corresponds to one bar.
   // Compute which chord goes with each lyric line by averaging bar→line mapping.
   const chordForLine = [];
+  const barForLine = [];  // bar number for each lyric line (for @time=N output)
   if (chordIds.length > 0 && chords.length > 0 && lyrics.length > 0) {
     const barsPerLine = Math.max(1, chordIds.length / lyrics.length);
     for (let li = 0; li < lyrics.length; li++) {
@@ -321,6 +322,7 @@ function gpifToChopro(gpifXml) {
       const cid = chordIds[barIdx];
       const cn = cid > 0 && cid <= chords.length ? chords[cid - 1] : "";
       chordForLine.push(cn);
+      barForLine.push(barIdx + 1); // bar numbers are 1-indexed
     }
   }
 
@@ -420,10 +422,16 @@ function gpifToChopro(gpifXml) {
       // Prepend chord from chordForLine if available
       const cIdx = globalLineIdx < chordForLine.length ? globalLineIdx : (chordForLine.length - 1);
       const chordName = (cIdx >= 0 && chordForLine[cIdx]) || "";
+
+      // @time=N from GP bar position (accurate within GP tempo grid)
+      const barNum = barForLine.length > globalLineIdx ? barForLine[globalLineIdx] : (barForLine.length > 0 ? barForLine[barForLine.length - 1] : 1);
+      const lineTime = ((barNum - 1) * 4 * 60) / (bpm || 120);
+      const timePrefix = `@time=${lineTime.toFixed(2)} @bar=${barNum}  `;
+
       if (chordName) {
-        output.push(`[${chordName}]${line}`);
+        output.push(`${timePrefix}[${chordName}]${line}`);
       } else {
-        output.push(line);
+        output.push(`${timePrefix}${line}`);
       }
       globalLineIdx++;
     }

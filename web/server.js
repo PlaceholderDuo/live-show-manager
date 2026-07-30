@@ -319,6 +319,7 @@ const state = {
   remaining: "0:00",
   regions: [],
   sections: [],
+  lyricSync: { ok: true, annotatedPct: 100, totalLines: 0, annotatedLines: 0, warnings: [] },
   // OSC feedback from REAPER (track volumes, FX params, tuner data, etc.)
   trackVolumes: {},       // { trackIdx: dB }
   trackMutes: {},         // { trackIdx: true/false }
@@ -452,9 +453,10 @@ function parseChoproDirectiveSections(text) {
 }
 
 // ── Lyric line extractor (for phone teleprompter) ──
-// Extracts content lines from chordpro with @bar=N annotations for client-side
-// rendering. Returns [{bar, text, type}] where type is "lyric" or "solo".
-// Lines without @bar=N get bar=null and the client estimates position.
+// Extracts content lines from chordpro with @time=N / @bar=N annotations
+// for client-side rendering. Returns [{time, bar, text, type}] where type
+// is "lyric" or "solo". @time=N (seconds) preferred over @bar=N (bars).
+// Lines without either get time=null, bar=null and the client estimates position.
 function extractLyricLines(choproText) {
   const lines = [];
   const rawLines = (choproText || "").split("\n");
@@ -484,14 +486,23 @@ function extractLyricLines(choproText) {
     }
     if (isBareChord(trimmed)) continue;
 
-    // Extract @bar=N and @duration=N annotations
+    // Extract @time=N (preferred) and @bar=N (legacy fallback)
+    let time = null;
     let bar = null;
     let clean = stripChords(trimmed);
-    const barMatch = clean.match(/^@bar=(\d+)\s*/);
+
+    const timeMatch = clean.match(/@time\s*=\s*([\d]+\.?\d*)/i);
+    if (timeMatch) {
+      time = parseFloat(timeMatch[1]);
+      clean = clean.replace(/@time\s*=\s*[\d]+\.?\d*/i, "");
+    }
+
+    const barMatch = clean.match(/@bar\s*=\s*(\d+)/i);
     if (barMatch) {
       bar = parseInt(barMatch[1], 10);
-      clean = clean.replace(/^@bar=\d+\s*/, "");
+      clean = clean.replace(/@bar\s*=\s*\d+/i, "");
     }
+
     // Strip any remaining @\w+=\S+ annotations
     clean = clean.replace(/@\w+=\S+/g, "").trim();
 
@@ -501,7 +512,7 @@ function extractLyricLines(choproText) {
     const lower = clean.toLowerCase();
     if (/^(song|artist|tuning|capo|tabbed|standard|no chords|let ring|palm mute)[:\s]/i.test(lower)) continue;
 
-    lines.push({ bar, text: clean, type: inSolo ? "solo" : "lyric" });
+    lines.push({ time, bar, text: clean, type: inSolo ? "solo" : "lyric" });
   }
 
   return lines;
@@ -1008,10 +1019,38 @@ function processSongData(songId) {
       }
       if (meta.lyrics && meta.bpm) {
         state.lyricLines = extractLyricLines(choproText);
+
+        // Compute lyric sync health
+        var totalLyricLines = state.lyricLines.length;
+        var annotatedLyricLines = state.lyricLines.filter(function (l) { return (l.time !== null && l.time !== undefined) || (l.bar !== null && l.bar !== undefined); }).length;
+        var annotatedPct = totalLyricLines > 0 ? Math.round((annotatedLyricLines / totalLyricLines) * 100) : 100;
+        var syncWarnings = [];
+        if (totalLyricLines > 0 && annotatedLyricLines === 0) {
+          syncWarnings.push("No @bar=N — lyrics estimated, may be out of sync");
+        } else if (totalLyricLines > 0 && annotatedPct < 80) {
+          syncWarnings.push("Only " + annotatedPct + "% of lines timed — gaps present");
+        } else if (totalLyricLines > 0 && annotatedPct < 100) {
+          syncWarnings.push(annotatedPct + "% timed — minor gaps");
+        }
+        if (meta.bpm === 120 && totalLyricLines > 0) {
+          syncWarnings.push("BPM is default 120 — timing may be inaccurate");
+        }
+        state.lyricSync = {
+          ok: syncWarnings.length === 0,
+          annotatedPct: annotatedPct,
+          totalLines: totalLyricLines,
+          annotatedLines: annotatedLyricLines,
+          warnings: syncWarnings,
+        };
+
         let maxBar = meta.duration_bars || 128;
         if (state.lyricLines && state.lyricLines.length > 0) {
           for (const l of state.lyricLines) {
             if (l.bar && l.bar > maxBar) maxBar = l.bar;
+            if (l.time && l.time > 0) {
+              var barFromTime = Math.floor(l.time * (meta.bpm || 120) / (4 * 60)) + 1;
+              if (barFromTime > maxBar) maxBar = barFromTime;
+            }
           }
         }
         const totalBars = Math.max(maxBar, meta.duration_bars || 128);
@@ -1091,6 +1130,18 @@ function localSeek(secs) {
   broadcastState();
 }
 
+function localSeekOffset(offset) {
+  const currentPos = localPlaying
+    ? localPlayOffset + (Date.now() - localPlayStartTime) / 1000
+    : (state.position || 0);
+  const newPos = Math.max(0, Math.min(currentPos + offset, state.duration || Infinity));
+  localPlayOffset = newPos;
+  state.position = localPlayOffset;
+  if (localPlaying) localPlayStartTime = Date.now();
+  broadcastState();
+  console.log("[Local] Seek", (offset > 0 ? "+" : "") + offset + "s →", newPos.toFixed(1) + "s");
+}
+
 function localJumpToSong(songIdx, songTitle) {
   localStop();
   ensureSongLibrary();
@@ -1146,7 +1197,9 @@ function localJumpToSong(songIdx, songTitle) {
   return true;
 }
 
-// 60fps tick — only active when local playback is running
+// 30fps tick — only active when local playback is running
+// Position advances every ~33ms. Broadcasts at ~10Hz to all clients.
+let lastBroadcastPos = -1;
 setInterval(() => {
   if (!localPlaying) return;
 
@@ -1167,11 +1220,12 @@ setInterval(() => {
   state.position = elapsed;
   state.playing = true;
 
-  // Throttle section broadcasts to ~10fps for perf
-  if (Math.floor(elapsed * 10) !== Math.floor((state.position || 0) * 10)) {
+  // Broadcast at ~10fps (every 100ms of playback time)
+  if (Math.floor(elapsed * 10) !== lastBroadcastPos) {
+    lastBroadcastPos = Math.floor(elapsed * 10);
     broadcastState();
   }
-}, 16);
+}, 33);
 
 // Restart local playback when new song data arrives
 function onSongLoaded() {
@@ -1244,11 +1298,38 @@ function pollLuaState() {
               if (meta.lyrics && meta.bpm) {
                 state.lyricLines = extractLyricLines(choproText);
 
+                // Compute lyric sync health for HUD warning display
+                var totalLyricLines = state.lyricLines.length;
+                var annotatedLyricLines = state.lyricLines.filter(function (l) { return (l.time !== null && l.time !== undefined) || (l.bar !== null && l.bar !== undefined); }).length;
+                var annotatedPct = totalLyricLines > 0 ? Math.round((annotatedLyricLines / totalLyricLines) * 100) : 100;
+                var syncWarnings = [];
+                if (totalLyricLines > 0 && annotatedLyricLines === 0) {
+                  syncWarnings.push("No @bar=N — lyrics estimated, may be out of sync");
+                } else if (totalLyricLines > 0 && annotatedPct < 80) {
+                  syncWarnings.push("Only " + annotatedPct + "% of lines timed — gaps present");
+                } else if (totalLyricLines > 0 && annotatedPct < 100) {
+                  syncWarnings.push(annotatedPct + "% timed — minor gaps");
+                }
+                if (meta.bpm === 120 && totalLyricLines > 0) {
+                  syncWarnings.push("BPM is default 120 — timing may be inaccurate");
+                }
+                state.lyricSync = {
+                  ok: syncWarnings.length === 0,
+                  annotatedPct: annotatedPct,
+                  totalLines: totalLyricLines,
+                  annotatedLines: annotatedLyricLines,
+                  warnings: syncWarnings,
+                };
+
                 // Compute actual duration + bar span from chordpro @bar annotations
                 let maxBar = meta.duration_bars || 128;
                 if (state.lyricLines && state.lyricLines.length > 0) {
                   for (const l of state.lyricLines) {
                     if (l.bar && l.bar > maxBar) maxBar = l.bar;
+            if (l.time && l.time > 0) {
+              var barFromTime = Math.floor(l.time * (meta.bpm || 120) / (4 * 60)) + 1;
+              if (barFromTime > maxBar) maxBar = barFromTime;
+            }
                   }
                 }
                 const totalBars = Math.max(maxBar, meta.duration_bars || 128);
@@ -1324,6 +1405,12 @@ io.on("connection", (socket) => {
       case "stop":
         if (!state.connected) localStop();
         else reaperAction("stop");
+        break;
+      case "seek":
+        // Nudge position by offset seconds (local mode only)
+        if (!state.connected) {
+          localSeekOffset(parseFloat(value && value.offset) || 0);
+        }
         break;
       case "prev":
       case "next": {
@@ -1613,6 +1700,11 @@ app.post("/api/local/pause", (req, res) => {
   localPause();
   res.json({ ok: true, playing: false, position: state.position });
 });
+app.post("/api/local/seek", (req, res) => {
+  const offset = parseFloat(req.body && req.body.offset) || 0;
+  localSeekOffset(offset);
+  res.json({ ok: true, position: state.position, playing: state.playing });
+});
 app.post("/api/local/jump", (req, res) => {
   const idx = req.body && req.body.songIndex;
   localJumpToSong(idx || 1);
@@ -1691,6 +1783,64 @@ app.post("/api/local/setlist/remove", (req, res) => {
   }
 });
 
+// ── Save/Load named setlists ──
+const SETLIST_DIR = path.join(__dirname, "..", "data", "setlists");
+
+function ensureSetlistDir() {
+  if (!fs.existsSync(SETLIST_DIR)) fs.mkdirSync(SETLIST_DIR, { recursive: true });
+}
+
+function sanitizeName(name) {
+  return (name || "untitled").replace(/[^a-zA-Z0-9 _-]/g, "").substring(0, 64);
+}
+
+app.post("/api/local/setlist/save", (req, res) => {
+  ensureSetlistDir();
+  const name = sanitizeName(req.body && req.body.name);
+  const filePath = path.join(SETLIST_DIR, name + ".json");
+  const data = {
+    name,
+    songs: activeSetlist.map(s => ({ title: s.title, artist: s.artist || "" })),
+    savedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+  res.json({ ok: true, name, count: data.songs.length });
+});
+
+app.get("/api/local/setlist/list", (req, res) => {
+  ensureSetlistDir();
+  try {
+    const files = fs.readdirSync(SETLIST_DIR).filter(f => f.endsWith(".json"));
+    const list = files.map(f => {
+      const filePath = path.join(SETLIST_DIR, f);
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      return { name: data.name, count: (data.songs || []).length, savedAt: data.savedAt };
+    }).sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
+    res.json({ ok: true, setlists: list });
+  } catch (e) {
+    res.json({ ok: true, setlists: [] });
+  }
+});
+
+app.post("/api/local/setlist/load", (req, res) => {
+  ensureSetlistDir();
+  const name = sanitizeName(req.body && req.body.name);
+  const filePath = path.join(SETLIST_DIR, name + ".json");
+  if (!fs.existsSync(filePath)) {
+    return res.json({ ok: false, error: "Setlist not found: " + name });
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    setActiveSetlist(data.songs || []);
+    if (activeSetlist.length > 0) {
+      localJumpToSong(1, activeSetlist[0].title);
+    }
+    res.json({ ok: true, name: data.name, count: activeSetlist.length, currentSong: state.currentSong });
+  } catch (e) {
+    res.json({ ok: false, error: "Failed to read setlist file" });
+  }
+});
+
 // ── ChordPro file endpoint ──
 // Returns the raw ChordPro text for a song, or 404.
 app.get("/api/chordpro/:songId", (req, res) => {
@@ -1760,6 +1910,157 @@ app.get("/api/song-data/:songId", (req, res) => {
     }
   }
   res.status(404).json({ error: "Song data not found" });
+});
+
+// Sync health for current song (TUI + HUD warnings)
+app.get("/api/sync-health", (req, res) => {
+  res.json({
+    currentSong: state.currentSong,
+    songId: state.songId,
+    lyricSync: state.lyricSync,
+    playing: state.playing,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// PRE-FLIGHT CHECK — one-shot system health check for iPhone
+// ═══════════════════════════════════════════════════════════
+app.get("/api/preflight", (req, res) => {
+  const issues = [];
+
+  // 1. Server — always true if we're responding
+  const serverOk = true;
+
+  // 2. REAPER connection — check bridge_state.json age
+  let reaperConnected = false;
+  let bridgeAge = null;
+  try {
+    if (fs.existsSync(BRIDGE_STATE_PATH)) {
+      const stat = fs.statSync(BRIDGE_STATE_PATH);
+      bridgeAge = (Date.now() - stat.mtimeMs) / 1000;
+      reaperConnected = bridgeAge < 5;
+    }
+  } catch (e) {}
+  if (!reaperConnected) issues.push("REAPER not connected (bridge file stale or missing)");
+
+  // 3. Tunnel — check cloudflared process
+  let tunnelActive = false;
+  let tunnelUrl = null;
+  try {
+    const cfRunning = require("child_process")
+      .execSync("pgrep -f 'cloudflared tunnel'", { encoding: "utf-8", timeout: 2000 })
+      .trim().length > 0;
+    tunnelActive = cfRunning;
+    const urlPath = path.join(__dirname, "..", "..", "..", "..", "Documents", "projects", "live-stage-hud", "web", "public", "assets", "tunnel-url.txt");
+    // Try the project root relative to this file
+    const altPath = path.join(__dirname, "..", "public", "assets", "tunnel-url.txt");
+    if (fs.existsSync(altPath)) {
+      tunnelUrl = fs.readFileSync(altPath, "utf-8").trim();
+    }
+  } catch (e) {}
+  if (!tunnelActive) issues.push("Cloudflare tunnel not active (guest singers can't connect externally)");
+
+  // 4. Bumper music
+  const bumperReady = fs.existsSync(path.join(os.homedir(), "bumper-music"));
+  let bumperTrackCount = 0;
+  if (bumperReady) {
+    try {
+      bumperTrackCount = fs.readdirSync(path.join(os.homedir(), "bumper-music"))
+        .filter(f => /\.(mp3|m4a|wav|flac)$/i.test(f)).length;
+    } catch (e) {}
+  }
+  if (!bumperReady || bumperTrackCount === 0) issues.push("Bumper music library missing or empty");
+
+  // 5. Connected clients
+  let clientCount = 0;
+  try {
+    const sockets = io.sockets.sockets;
+    clientCount = sockets ? sockets.size : 0;
+  } catch (e) {}
+  if (clientCount === 0) issues.push("No clients connected (HUD or iPhone not open)");
+
+  // 6. Setlist lyric sync — scan each song in the active setlist
+  const setlistSongs = [];
+  const setlist = state.setlist || [];
+  let setlistOk = 0, setlistWarn = 0, setlistError = 0;
+
+  for (const entry of setlist) {
+    const title = entry.title || "";
+    const songId = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    let annotatedPct = 0;
+    let totalLines = 0;
+    let annotatedLines = 0;
+    let found = false;
+
+    // Try exact folder name first, then slug
+    const tryDirs = [songId];
+    try {
+      const dirs = fs.readdirSync(REAPER_SONGS_PATH, { withFileTypes: true }).filter(d => d.isDirectory());
+      for (const d of dirs) {
+        const slug = d.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        if (slug === songId && d.name !== songId) tryDirs.push(d.name);
+      }
+    } catch (e) {}
+
+    for (const dirName of tryDirs) {
+      const choproPath = path.join(REAPER_SONGS_PATH, dirName, "song.chopro");
+      if (fs.existsSync(choproPath)) {
+        found = true;
+        try {
+          const text = fs.readFileSync(choproPath, "utf-8");
+          const allLines = text.split("\n").filter(l => {
+            const t = l.trim();
+            return t && !/^\{/.test(t);
+          });
+          totalLines = allLines.length;
+          annotatedLines = allLines.filter(l => /@time=/.test(l)).length;
+          // Also count @bar= lines
+          const barLines = allLines.filter(l => /@bar=/.test(l)).length;
+          annotatedLines = Math.max(annotatedLines, barLines);
+          annotatedPct = totalLines > 0 ? Math.round((annotatedLines / totalLines) * 100) : 0;
+        } catch (e) {
+          annotatedPct = 0;
+        }
+        break;
+      }
+    }
+
+    const songStatus = annotatedPct >= 95 ? "ok" : annotatedPct >= 70 ? "warn" : "error";
+    if (songStatus === "ok") setlistOk++;
+    else if (songStatus === "warn") setlistWarn++;
+    else setlistError++;
+
+    setlistSongs.push({
+      title,
+      annotatedPct,
+      annotatedLines,
+      totalLines,
+      status: songStatus,
+      found,
+    });
+  }
+
+  if (setlistError > 0) issues.push(`${setlistError} song(s) have less than 70% lyric timing coverage`);
+  else if (setlistWarn > 0) issues.push(`${setlistWarn} song(s) have less than 95% lyric timing coverage`);
+
+  const allClear = issues.length === 0;
+
+  res.json({
+    server: { ok: serverOk, port: PORT },
+    reaper: { connected: reaperConnected, bridgeAgeSec: bridgeAge ? Math.round(bridgeAge * 10) / 10 : null },
+    tunnel: { active: tunnelActive, url: tunnelUrl },
+    bumper: { ready: bumperReady, tracks: bumperTrackCount },
+    clients: { count: clientCount },
+    setlist: {
+      count: setlist.length,
+      ok: setlistOk,
+      warn: setlistWarn,
+      error: setlistError,
+      songs: setlistSongs,
+    },
+    allClear,
+    issues,
+  });
 });
 
 // ═══════════════════════════════════════════════════════════

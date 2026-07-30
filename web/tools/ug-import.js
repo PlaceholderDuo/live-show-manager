@@ -277,7 +277,8 @@ function createMetaFromChopro(choproText, scrapeTitle, scrapeArtist, scrapeKey, 
     const sec = sections[i];
     const firstLine = sec.lines[0] || sec.label || "";
     lyrics.push({ bar, text: firstLine });
-    bar += Math.max(sec.lines.length * 4, 8);
+    // Standard pop/rock verse is ~16 bars. Each lyric line covers ~2 bars.
+    bar += Math.max(sec.lines.length * 2, 16);
   }
 
   // Extra metadata from UG

@@ -269,12 +269,9 @@
       }
 
       var barAnnot = null;
-      var content = raw;
-      var barMatch = raw.match(/^@bar\s*=\s*(\d+)\s*/i);
-      if (barMatch) {
-        barAnnot = parseInt(barMatch[1], 10);
-        content = raw.substring(barMatch[0].length);
-      }
+      var barMatch = raw.match(/@bar\s*=\s*(\d+)/i);
+      if (barMatch) barAnnot = parseInt(barMatch[1], 10);
+      var content = raw.replace(/^@(?:time|bar)\s*=\s*\S+\s*/gi, "").trimStart();
 
       lines.push({
         pairs: parseLinePairs(content),
@@ -899,6 +896,26 @@
   // Scale HUD to fit the window
   fitHud();
 
+  // ── Position interpolation (smooth beat counter between state updates) ──
+  var lastServerPosition = 0;
+  var lastServerTime = 0;
+  var lastServerBpm = 0;
+
+  function predictedPosition() {
+    if (lastServerTime > 0) {
+      var dt = (Date.now() - lastServerTime) / 1000;
+      return lastServerPosition + dt;
+    }
+    return 0;
+  }
+
+  // ── Smooth conductor loop (updates bar/beat between state broadcasts) ──
+  var conductorLoop = setInterval(function () {
+    if (lastServerTime === 0) return;
+    var displayPos = predictedPosition();
+    updateConductor(displayPos, lastServerBpm || 0);
+  }, 100);
+
   // ── Heartbeat: detect stale state updates ──
   var lastStateTime = 0;
   var heartbeatInterval = setInterval(function () {
@@ -934,6 +951,13 @@
       try {
       lastStateTime = Date.now();
 
+      // Store server position for client-side interpolation
+      if (s.position !== undefined) {
+        lastServerPosition = s.position;
+        lastServerTime = Date.now();
+        if (s.bpm) lastServerBpm = s.bpm;
+      }
+
       // Stacked Pro Metadata
       topTitle.textContent = s.currentSong || "\u2014";
       topKey.textContent = s.currentKey || "\u2014";
@@ -945,13 +969,17 @@
         lastSectionIdx = -1;
       }
 
+      // Use interpolated position for smooth beat counting
+      var displayPos = predictedPosition();
+      var displayBpm = s.bpm || lastServerBpm || 0;
+
       // Conductor Counter & Metronome
-      updateConductor(s.position || 0, s.bpm || 0);
+      updateConductor(displayPos, displayBpm);
 
       // Playhead slide
-      var pct = s.duration ? Math.min(100, ((s.position || 0) / s.duration) * 100) : 0;
+      var pct = s.duration ? Math.min(100, (displayPos / s.duration) * 100) : 0;
       progressFill.style.left = pct + "%";
-      footerElapsed.textContent = formatTime(s.position);
+      footerElapsed.textContent = formatTime(displayPos);
       footerTotal.textContent = formatTime(s.duration);
 
       // Auto next song key lookup
@@ -961,7 +989,7 @@
         updateNextSongDisplay("\u2014");
       }
 
-      var barCalc = Math.floor((s.position || 0) * (s.bpm || 0) / (4 * 60)) + 1;
+      var barCalc = Math.floor(displayPos * displayBpm / (4 * 60)) + 1;
 
       // Section markers & playhead
       if (s.sections && s.sections.length > 0) {
