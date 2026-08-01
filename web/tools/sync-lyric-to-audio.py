@@ -38,7 +38,7 @@ def normalize(text):
     return " ".join(text.split())
 
 def parse_chopro_lyrics(chopro_path):
-    """Extract lyric lines (ignoring headers, chords, directives)."""
+    """Extract lyric lines (ignoring headers, chords, directives, metadata)."""
     if not os.path.exists(chopro_path):
         return []
     
@@ -55,16 +55,31 @@ def parse_chopro_lyrics(chopro_path):
         if stripped.startswith("##"):
             continue
         
+        # Skip bare chord markers
+        if re.match(r"^\/.+\/$", stripped):
+            continue
+        
         # Extract text (strip chords + annotations)
         text = re.sub(r"@\w+=[\d.\s]+", "", stripped)
         text = re.sub(r"\[[^\]]+\]", "", text)
         text = re.sub(r"/[A-G][^/\s]*/", "", text)
+        # Strip trailing @N.N
+        text = re.sub(r"\s@[\d]+\.?\d{1,2}\s*$", "", text)
         text = text.strip()
         
         if not text or len(text) < 3:
             continue
+        
+        # Skip metadata lines
+        lower = text.lower()
+        if re.match(r"^(song|artist|tuning|capo|tabbed|standard|no chords|let ring|palm mute|difficulty)[:\s]", lower):
+            continue
         if re.match(r"^[A-G][b#]?(m|dim|aug|sus\d*|add\d+|maj\d*|m\d*|\d+)?$", text):
             continue
+        
+        # Rejoin syllable-separated words: "sa-tis-fac-tion" → "satisfaction"
+        # Whisper outputs whole words, not syllables
+        text = re.sub(r"(\w)-(\w)", r"\1\2", text)
         
         lyrics.append({
             "text": text,
