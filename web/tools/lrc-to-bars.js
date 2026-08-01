@@ -176,7 +176,16 @@ function processSongChopro(songDir, meta, lrcLines) {
   }
 
   const matches = tryMatch(chordproPlain, chordproOrig, lrcLines);
-  if (matches.length === 0) { console.log("  SKIP: no LRC matches"); return false; }
+  if (matches.length === 0) {
+    // No lyric lines matched — chopro may be empty (e.g., failed UG import).
+    // Fallback: use LRCLIB lyrics directly as the chopro content.
+    if (lrcLines.length >= 6) {
+      console.log(`  No lyric matches — building chopro from LRCLIB lyrics (${lrcLines.length} lines)`);
+      return buildChoproFromLRC(songDir, meta, lrcLines);
+    }
+    console.log("  SKIP: no LRC matches");
+    return false;
+  }
 
   // Build per-line timing from LRC matches
   // @time=N stores the LRC timestamp in seconds (ground truth, no BPM dependency)
@@ -209,6 +218,85 @@ function processSongChopro(songDir, meta, lrcLines) {
   const newContent = lines.join("\n");
   fs.writeFileSync(choproPath, newContent, "utf-8");
   console.log(`  WROTE @time=N for ${matches.length} lines (${Object.keys(timePerLine).length} unique)`);
+  return true;
+}
+
+// Build chopro from LRCLIB lyrics when existing chopro is empty or has no lyrics.
+// Groups LRC lines into stanzas at blank-line boundaries, labels sections
+// heuristically (Verse 1, Chorus 1, etc.), and writes @time=N annotations.
+function buildChoproFromLRC(songDir, meta, lrcLines) {
+  const choproPath = path.join(songDir, "song.chopro");
+  const bpm = meta.bpm || 120;
+  const beatsPerBar = (meta.time_sig && meta.time_sig[0]) || 4;
+  
+  // Group LRC lines into stanzas — split on blank lines or every ~8 lines
+  const stanzas = [];
+  let current = [];
+  for (const lrc of lrcLines) {
+    const text = lrc.text.trim();
+    // Filter out LRC timestamp artifacts like [02:24.76]
+    const cleanText = text.replace(/^\[?\d{2}:\d{2}[.:]\d{2}\]?\s*/, "").trim();
+    lrc.text = cleanText || text; // fallback to original if regex clears everything
+    
+    if (!cleanText) {
+      if (current.length > 0) { stanzas.push(current); current = []; }
+    } else {
+      current.push(lrc);
+    }
+  }
+  if (current.length > 0) stanzas.push(current);
+  
+  // Split large stanzas on repeated first lines
+  const splitStanzas = [];
+  for (const stanza of stanzas) {
+    if (stanza.length <= 12) { splitStanzas.push(stanza); continue; }
+    // Split large stanzas every ~8 lines
+    for (let i = 0; i < stanza.length; i += 8) {
+      splitStanzas.push(stanza.slice(i, Math.min(i + 8, stanza.length)));
+    }
+  }
+  
+  // Heuristic section labeling
+  const stanzaSigs = splitStanzas.map(s => s.map(l => l.text.substring(0, 30).toLowerCase()).join("|"));
+  const sigCounts = {};
+  for (const sig of stanzaSigs) sigCounts[sig] = (sigCounts[sig] || 0) + 1;
+  
+  const output = [];
+  output.push(`{title: ${meta.title || "Unknown"}}`);
+  output.push(`{artist: ${meta.artist || ""}}`);
+  output.push(`{key: ${meta.key || ""}}`);
+  output.push(`{bpm: ${bpm}}`);
+  output.push("");
+  
+  let verseCount = 0, chorusCount = 0;
+  
+  for (let si = 0; si < splitStanzas.length; si++) {
+    const stanza = splitStanzas[si];
+    const sig = stanzaSigs[si];
+    const repeatCount = sigCounts[sig] || 1;
+    
+    let type, label;
+    if (si === 0) { type = "verse"; verseCount++; label = `Verse ${verseCount}`; }
+    else if (repeatCount > 1) { type = "chorus"; chorusCount++; label = `Chorus ${chorusCount}`; }
+    else if (si === stanzas.length - 1 && stanza.length <= 2) { type = "outro"; label = "Outro"; }
+    else { type = "verse"; verseCount++; label = `Verse ${verseCount}`; }
+    
+    output.push(`## ${label} @${stanza[0].time.toFixed(2)}`);
+    
+    for (const lrc of stanza) {
+      const bar = timeToBar(lrc.time, bpm, beatsPerBar);
+      output.push(`  @time=${lrc.time.toFixed(2)} @bar=${bar}  ${lrc.text}`);
+    }
+    output.push("");
+  }
+  
+  // Backup existing
+  if (fs.existsSync(choproPath)) {
+    try { fs.copyFileSync(choproPath, choproPath + ".lrcbak"); } catch {}
+  }
+  
+  fs.writeFileSync(choproPath, output.join("\n"), "utf-8");
+  console.log(`  WROTE chopro from LRCLIB: ${stanzas.length} sections, ${lrcLines.length} timed lines`);
   return true;
 }
 
