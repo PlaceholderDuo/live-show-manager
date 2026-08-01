@@ -161,7 +161,8 @@ function processSongChopro(songDir, meta, lrcLines) {
   const choproPath = path.join(songDir, "song.chopro");
   if (!fs.existsSync(choproPath)) { console.log("  SKIP: no song.chopro"); return false; }
   let content = fs.readFileSync(choproPath, "utf-8");
-  if (content.includes("@time=")) { console.log("  SKIP: already has @time=N"); return false; }
+  if (content.includes("@time=") && !isForce) { console.log("  SKIP: already has @time=N"); return false; }
+  if (content.includes("@time=") && isForce) { console.log("  Upgrading @time annotations from LRCLIB..."); }
 
   const lines = content.split("\n");
 
@@ -309,7 +310,8 @@ async function processSong(folderName) {
   const choproPath = path.join(songDir, "song.chopro");
   if (fs.existsSync(choproPath)) {
     const c = fs.readFileSync(choproPath, "utf-8");
-    if (c.includes("@time=")) { console.log(`SKIP ${folderName}: already has @time=N`); return; }
+    if (c.includes("@time=") && !isForce) { console.log(`SKIP ${folderName}: already has @time=N`); return; }
+    if (c.includes("@time=") && isForce) { console.log(`  Upgrading @time from LRCLIB for ${folderName}...`); }
     if (c.includes("@bar=") && !isForce) { console.log(`SKIP ${folderName}: has @bar=N (pass --force to upgrade to @time=N)`); return; }
     if (c.includes("@bar=") && isForce) { console.log(`  Upgrading @bar→@time for ${folderName}...`); }
   }
@@ -372,7 +374,14 @@ async function main() {
   const args = process.argv.slice(2);
   const runAll = args.includes("--all");
   const singleIdx = args.indexOf("--song");
-  const singleSong = singleIdx !== -1 && args[singleIdx + 1] ? args.slice(singleIdx + 1).join(" ") : null;
+  const singleSong = singleIdx !== -1 && args[singleIdx + 1] ? (() => {
+    const parts = [];
+    for (let i = singleIdx + 1; i < args.length; i++) {
+      if (args[i].startsWith("--")) break;
+      parts.push(args[i]);
+    }
+    return parts.length > 0 ? parts.join(" ") : null;
+  })() : null;
   const limitIdx = args.indexOf("--limit");
   const limit = limitIdx !== -1 && args[limitIdx + 1] ? parseInt(args[limitIdx + 1], 10) : null;
 
