@@ -34,31 +34,29 @@ def slugify(s):
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 def parse_chopro_annotations(chopro_path):
-    """Extract @time and lyric text from a ChordPro file (old + new format)."""
+    """Extract @time and lyric text from a ChordPro file (old + new format).
+    Filters out chord-only lines, bare chords, metadata, and section labels."""
     if not os.path.exists(chopro_path):
         return []
     
     with open(chopro_path) as f:
         lines = f.readlines()
     
-    # Detect format
     is_new_format = any(line.strip().startswith("##") for line in lines)
     
     annotations = []
     for line in lines:
         stripped = line.strip()
-        if not stripped or stripped.startswith("{"):
-            continue
-        if stripped.startswith("##"):
+        if not stripped or stripped.startswith("{") or stripped.startswith("##"):
             continue
         if re.match(r"^\/.+\/$", stripped):
             continue
         
-        # Extract time from old prefix format: @time=N
+        # Extract time from OLD prefix format: @time=N
         time_m = re.search(r"@time\s*=\s*([\d.]+)", stripped)
         time_sec = float(time_m.group(1)) if time_m else None
         
-        # Extract time from new trailing format: @N.N at end of line
+        # Extract time from NEW trailing format: @N.N at end of line
         if time_sec is None and is_new_format:
             trail_m = re.search(r"\s@([\d]+\.?\d{1,2})\s*$", stripped)
             if trail_m:
@@ -70,19 +68,27 @@ def parse_chopro_annotations(chopro_path):
         bar_m = re.search(r"@bar\s*=\s*(\d+)", stripped)
         bar = int(bar_m.group(1)) if bar_m else 0
         
-        # Strip annotations, chord brackets, and section markers
+        # Strip annotations, chord brackets
         text = re.sub(r"@\w+=[\d.\s]+", "", stripped)
-        text = re.sub(r"\[[^\]]+\]", "", text)        # inline chords [D]
-        text = re.sub(r"/[A-G][^/\s]*/", "", text)     # bare chords /A/
-        text = re.sub(r"\s@[\d]+\.?\d{1,2}\s*$", "", text)  # trailing @N.N
+        text = re.sub(r"\[[^\]]+\]", "", text)
+        text = re.sub(r"/[A-G][^/\s]*/", "", text)
+        text = re.sub(r"\s@[\d]+\.?\d{1,2}\s*$", "", text)
         text = text.strip()
         
-        # Skip if no real lyric content
-        if not text or len(text) < 3:
+        if not text or len(text) < 4:
             continue
-        # Skip if it's just a chord name or section label
-        if re.match(r"^[A-G][b#]?(m|dim|aug|sus\d*|add\d+|maj\d*|m\d*|\d+)?$", text):
+        
+        # Skip metadata lines
+        lower = text.lower()
+        if re.match(r"^(song|artist|tuning|capo|tabbed|standard|difficulty)[:\s]", lower):
             continue
+        
+        # Skip pure chord lines: "A D G C" or "E7 Am Dm" etc
+        words = text.split()
+        if len(words) <= 3:
+            chord_count = sum(1 for w in words if re.match(r"^[A-G][b#]?(m|dim|aug|sus\d*|add\d+|maj\d*|m\d*|\d+)?$", w))
+            if chord_count == len(words):
+                continue
         
         annotations.append({
             "time": time_sec,
@@ -163,17 +169,20 @@ def verify_song(folder_name):
     audio_dir = os.path.join(AUDIO_DIR, folder_name)
     chopro_path = os.path.join(song_dir, "song.chopro")
     vocals_path = os.path.join(audio_dir, "stems", "vocals.mp3")
+    full_path = os.path.join(audio_dir, "full.mp3")
     
     if not os.path.exists(chopro_path):
         return {"status": "skip", "reason": "no chordpro"}
-    if not os.path.exists(vocals_path):
-        return {"status": "skip", "reason": "no vocals stem"}
+    if not os.path.exists(full_path):
+        return {"status": "skip", "reason": "no full.mp3"}
+    
+    audio_path = full_path
     
     annotations = parse_chopro_annotations(chopro_path)
     if not annotations:
         return {"status": "skip", "reason": "no @time annotations"}
     
-    whisper_result = transcribe_vocals(vocals_path)
+    whisper_result = transcribe_vocals(audio_path)
     if not whisper_result:
         return {"status": "skip", "reason": "transcription failed"}
     
@@ -214,7 +223,7 @@ def main():
     
     # Only process songs with stems
     folders = [f for f in folders 
-               if os.path.exists(os.path.join(AUDIO_DIR, f, "stems", "vocals.mp3"))]
+               if os.path.exists(os.path.join(AUDIO_DIR, f, "full.mp3"))]
     
     if LIMIT:
         folders = folders[:LIMIT]

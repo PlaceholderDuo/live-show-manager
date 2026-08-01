@@ -516,6 +516,8 @@ function extractLyricLines(choproText) {
 
     // Strip any remaining @\w+=\S+ annotations
     clean = clean.replace(/@\w+=\S+/g, "").trim();
+    // Strip embedded ## section headers (mixed-format files)
+    clean = clean.replace(/##\s+[^@]*?(?:\s*@[\d.]+)?$/, "").trim();
 
     if (!clean) continue;
 

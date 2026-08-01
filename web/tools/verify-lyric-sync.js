@@ -156,6 +156,8 @@ function parseChoproLines(text) {
     clean = clean.replace(/\s@[\d]+\.?\d{1,2}\s*$/g, "").trim();
     // Strip any remaining @\w+=\S+
     clean = clean.replace(/@\w+=\S+/g, "").trim();
+    // Strip embedded ## section headers (mixed-format files)
+    clean = clean.replace(/##\s+[^@]*?(?:\s*@[\d.]+)?$/, "").trim();
     clean = stripEmoji(clean).trim();
     if (!clean) continue;
     if (/^(song|artist|tuning|capo|tabbed|standard|no chords|let ring|palm mute)[:\s]/i.test(clean.toLowerCase())) continue;

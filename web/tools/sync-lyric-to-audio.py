@@ -11,7 +11,7 @@
 #   python3 tools/sync-lyric-to-audio.py --limit 3      # test first N
 #   python3 tools/sync-lyric-to-audio.py --dry-run      # preview, no writes
 
-import os, sys, json, re, time
+import os, sys, json, re, time, difflib
 import whisper
 import numpy as np
 
@@ -85,52 +85,66 @@ def parse_chopro_lyrics(chopro_path):
             "text": text,
             "normalized": normalize(text),
             "words": set(normalize(text).split()),
+            "words_ordered": normalize(text).split(),  # preserves order for search
         })
     
     return lyrics
 
 def find_lyric_positions(lyric_lines, whisper_words):
-    """Find the audio timestamp where each lyric line starts, using word overlap."""
+    """Align lyric lines to audio using difflib sequence matching.
+    
+    Uses Python's difflib.SequenceMatcher to find the longest matching
+    subsequence between the full lyric word sequence and the Whisper
+    transcript word sequence. This is robust against misheard words
+    because it finds the best overall alignment, not exact substrings.
+    """
     if not whisper_words:
         return []
     
-    # Build sliding windows of whisper words
-    results = []
-    window_size = 4  # check 4 words at a time
+    # Build the sequence as word tokens
+    whisper_seq = [w["word"] for w in whisper_words]
+    lyric_words_all = []
+    lyric_line_map = []  # maps token index → lyric line index
     
-    for ly in lyric_lines:
-        ly_words = ly["words"]
-        if not ly_words:
-            results.append({"line": ly["text"], "time": None, "match": 0})
+    for li, ly in enumerate(lyric_lines):
+        words = ly["words_ordered"]
+        for w in words:
+            lyric_words_all.append(w)
+            lyric_line_map.append(li)
+    
+    if len(lyric_words_all) < 5 or len(whisper_seq) < 10:
+        return [{"line": ly["text"][:80], "time": None, "match": 0} for ly in lyric_lines]
+    
+    # Run sequence matcher
+    sm = difflib.SequenceMatcher(None, whisper_seq, lyric_words_all)
+    blocks = sm.get_matching_blocks()
+    
+    # For each matched block, assign timestamps to lyric lines
+    results = [{"line": ly["text"][:80], "time": None, "match": 0} for ly in lyric_lines]
+    
+    for block in blocks[:-1]:  # last block is always (len_a, len_b, 0)
+        whisper_start, lyric_start, length = block
+        if length < 3:
             continue
         
-        best_time = None
-        best_score = 0
-        
-        for i in range(len(whisper_words) - window_size + 1):
-            window = whisper_words[i:i + window_size]
-            window_words = set(w["word"] for w in window)
+        # For each unique lyric line covered by this block, find its timestamp
+        seen_lines = set()
+        for lyric_token_pos in range(lyric_start, lyric_start + length):
+            li = lyric_line_map[lyric_token_pos]
+            if li in seen_lines:
+                continue
+            seen_lines.add(li)
             
-            # How many lyric words appear in this whisper window?
-            overlap = len(ly_words & window_words)
-            
-            if overlap > best_score:
-                best_score = overlap
-                best_time = window[0]["start"]
-        
-        # Require decent overlap
-        if best_score >= 2 or best_score >= len(ly_words) * 0.3:
-            results.append({
-                "line": ly["text"][:80],
-                "time": best_time,
-                "match": round(best_score / max(len(ly_words), 1), 2),
-            })
-        else:
-            results.append({
-                "line": ly["text"][:80],
-                "time": None,
-                "match": 0,
-            })
+            # The whisper position for this lyric token is at whisper_start
+            # (first matched word in the block)
+            token_whisper_pos = whisper_start + (lyric_token_pos - lyric_start)
+            if token_whisper_pos < len(whisper_seq):
+                t = whisper_words[token_whisper_pos]["start"]
+                results[li] = {
+                    "line": lyric_lines[li]["text"][:80],
+                    "time": round(t, 2),
+                    "match": 0.8,
+                }
     
     return results
 
@@ -155,12 +169,16 @@ def sync_song(folder_name):
     audio_dir = os.path.join(AUDIO_DIR, folder_name)
     chopro_path = os.path.join(song_dir, "song.chopro")
     vocals_path = os.path.join(audio_dir, "stems", "vocals.mp3")
+    full_path = os.path.join(audio_dir, "full.mp3")
     meta_path = os.path.join(song_dir, "meta.json")
     
     if not os.path.exists(chopro_path):
         return {"status": "skip", "reason": "no chordpro"}
-    if not os.path.exists(vocals_path):
-        return {"status": "skip", "reason": "no vocals stem"}
+    if not os.path.exists(full_path):
+        return {"status": "skip", "reason": "no full.mp3 (or vocals stem)"}
+    
+    # Prefer full.mp3 — Whisper handles full mix better than compressed stems
+    audio_path = full_path
     
     # Load BPM (use existing or detect)
     with open(meta_path) as f:
@@ -173,7 +191,7 @@ def sync_song(folder_name):
     
     # Transcribe
     model = whisper.load_model(MODEL)
-    result = model.transcribe(vocals_path, word_timestamps=True, language="en")
+    result = model.transcribe(audio_path, word_timestamps=True, language="en")
     
     whisper_words = []
     for seg in result.get("segments", []):
@@ -263,12 +281,12 @@ def main():
         folders = [f for f in folders if SPECIFIC_SONG.lower() in f.lower()]
     
     folders = [f for f in folders 
-               if os.path.exists(os.path.join(AUDIO_DIR, f, "stems", "vocals.mp3"))]
+               if os.path.exists(os.path.join(AUDIO_DIR, f, "full.mp3"))]
     
     if LIMIT:
         folders = folders[:LIMIT]
     
-    print(f"Found {len(folders)} songs with stems\n")
+    print(f"Found {len(folders)} songs with audio\n")
     
     for i, folder in enumerate(folders, 1):
         print(f"[{i}/{len(folders)}] {folder}")
