@@ -484,6 +484,7 @@ function extractLyricLines(choproText) {
       else if (lower.includes("start_of")) { inSolo = false; }
       continue;
     }
+    if (/^##\s/.test(trimmed)) continue;
     if (isBareChord(trimmed)) continue;
 
     // Extract @time=N (preferred) and @bar=N (legacy fallback)

@@ -742,3 +742,64 @@ All attempted BPM sources hit walls:
 - **Last.fm API**: Slow/timeout
 
 The GPIF approach was the only viable path — the BPM data was already in the files we downloaded, just never saved. The `fix-bpm-gp.js` script closes the gap.
+
+---
+
+## 2026-07-30 (Evening): Audio Download Pipeline + Aubio BPM Detection
+
+### Summary
+
+Built a full audio pipeline that downloads 249 songs from YouTube, downsamples them (mono 22kHz 48kbps), and extracts BPM from the audio using aubio beat tracking. This fills the BPM gap for songs that couldn't get BPM from GPIF (regular UG text tabs).
+
+### Pipeline: `tools/audio-pipeline.py`
+
+**Output:** `~/Music/SongAudio/<Song Name>/`
+- `full.mp3` — downsampled full song (mono 22kHz 48kbps, ~1.3MB per song)
+- `stems/` — (future) demucs stem separation output
+
+**Flow per song:**
+1. Search YouTube via yt-dlp (`artist title official audio`)
+2. Download best audio (m4a/webm)
+3. ffmpeg downsample → `full.mp3` (matching `audio_import.lua` spec: `-ac 1 -ar 22050 -b:a 48k`)
+4. aubio beat tracking → BPM + confidence score
+5. Write BPM to `meta.json` with `bpm_source: "aubio"` + `bpm_confidence`
+6. Skip songs already at `full.mp3` (idempotent)
+7. Support for existing ReaperSongs audio files (import + downsample)
+
+**Confidence gating:** Minimum 0.3 confidence for aubio BPM. Lower confidence results are discarded to avoid bad data.
+
+### Final BPM State
+
+| Source | Count | Accuracy |
+|--------|-------|----------|
+| GPIF (UG Official/Pro tabs) | 133 | Exact (Guitar Pro tempo automation) |
+| Aubio (audio beat tracking) | 100 | ±3-8 BPM (onset detection) |
+| Existing (slug-named songs) | 15 | Manual/existing |
+| Still BPM=120 | 23 | Failed download or low confidence |
+| **Real BPM coverage** | **248/271 (92%)** | |
+
+### Storage
+
+| Artifact | Per Song | Total |
+|----------|----------|-------|
+| Full song (downsampled) | ~1.3 MB | **365 MB** (249 songs) |
+| Full stems (4, downsampled) | ~5.0 MB | ~1.4 GB (estimated, not yet built) |
+| Combined (songs + stems) | ~6.3 MB | ~1.7 GB |
+
+### Demucs Status
+
+`demucs` + PyTorch installed and tested. Stem separation not yet run (takes ~30-60s per song). Pipeline has `--stems` flag ready. Will produce:
+- `stems/vocals.mp3`
+- `stems/drums.mp3` 
+- `stems/bass.mp3`
+- `stems/other.mp3`
+
+All downsampled to same mono 22kHz 48kbps format.
+
+### Files Created/Modified
+
+```
+web/tools/audio-pipeline.py    — NEW: Full audio download + downsample + BPM pipeline
+BUILD_LOG.md                   — This entry
+~/Music/SongAudio/             — 249 song audio folders (365 MB)
+```
