@@ -138,6 +138,17 @@ def song_status(folder_name):
     if total_lyric == 0:
         tier = 0  # no lyrics to time
     
+    # Determine verification status
+    verified = False
+    if timed == total_lyric and total_lyric > 0 and has_real_bpm:
+        verified = True
+    elif pct >= 80 and has_real_bpm:
+        verified = True  # mostly timed, good BPM
+    if total_lyric == 0:
+        verified = None  # no lyrics to verify
+    if timed == 0 and total_lyric > 0:
+        verified = False  # needs timing
+    
     return {
         "song": folder_name,
         "bpm": bpm,
@@ -150,6 +161,7 @@ def song_status(folder_name):
         "audio": has_full,
         "stems": has_stems,
         "tier": tier,
+        "verified": verified,
     }
 
 def color_status(status):
@@ -223,13 +235,19 @@ def main():
     # Table output
     RESET = "\033[0m"
     BOLD = "\033[1m"
+    DIM = "\033[2m"
+    G = "\033[32m"
+    R = "\033[31m"
     
     print(f"\n{BOLD}═══ Song Status Report ═══{RESET}")
     print(f"Total: {BOLD}{total}{RESET}  |  Stems: {BOLD}{has_stems}{RESET}  |  Audio: {BOLD}{has_audio}{RESET}  |  Real BPM: {BOLD}{real_bpm}{RESET}")
     print(f"Fully timed: {BOLD}{fully_timed}{RESET}  |  Partial: {BOLD}{partially_timed}{RESET}  |  No timing: {BOLD}{no_timing}{RESET}")
+    verified_count = sum(1 for s in statuses if s.get("verified") is True)
+    unverified_count = sum(1 for s in statuses if s.get("verified") is False and s["lyric_lines"] > 0)
+    print(f"Verified: {G}{BOLD}{verified_count}{RESET}  |  Unverified: {R}{BOLD}{unverified_count}{RESET}")
     print()
-    print(f"{'Song':<40} {'BPM':>4} {'Timed':>6} {'Audio':>6} {'Stems':>6} {'Tier':>5}")
-    print("-" * 70)
+    print(f"{'Song':<40} {'BPM':>4} {'Timed':>6} {'Audio':>6} {'Stems':>6} V")
+    print("-" * 73)
     
     for s in statuses:
         c = color_status(s)
@@ -238,12 +256,16 @@ def main():
         timed_str = f"{s['timed_pct']}%" if s["lyric_lines"] > 0 else "—"
         audio_str = "✓" if s["audio"] else "—"
         stems_str = "✓" if s["stems"] else "—"
-        tier_str = str(s["tier"]) if s["lyric_lines"] > 0 else "—"
+        v = s.get("verified")
+        if v is True: verify_str = G + "✓" + RESET
+        elif v is False: verify_str = R + "✗" + RESET
+        elif v is None: verify_str = DIM + "—" + RESET
+        else: verify_str = " "
         
-        print(f"{c}{name:<40} {bpm_str:>4} {timed_str:>6} {audio_str:>6} {stems_str:>6} {tier_str:>5}{RESET}")
+        print(f"{c}{name:<40} {bpm_str:>4} {timed_str:>6} {audio_str:>6} {stems_str:>6} {verify_str}{RESET}")
     
     print()
-    print("BPM* = default 120 (not verified)  |  Tier: 0=none 1=partial 2=timed 3=whisper-ready")
+    print("BPM* = default 120 (not verified)  |  V = timing verified (✓=yes ✗=no)")
 
 if __name__ == "__main__":
     main()
