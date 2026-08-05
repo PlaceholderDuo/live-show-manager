@@ -1073,6 +1073,11 @@ function ensureSongLibrary() {
 function processSongData(songId) {
   const metaPath = resolveMetaPath(songId);
   const choproPath = resolveChoproPath(songId);
+  // Reset before load — prevents stale state leak if any step fails
+  state.lyricLines = [];
+  state.lyricSync = { ok: false, annotatedPct: 0, totalLines: 0, annotatedLines: 0, warnings: ["Lyric data unavailable"] };
+  state.sections = [];
+  state.duration = 240; // safe default: 4 minutes
   try {
     if (metaPath && fs.existsSync(metaPath)) {
       const metaRaw = fs.readFileSync(metaPath, "utf-8");
@@ -1128,6 +1133,7 @@ function processSongData(songId) {
     }
   } catch (err) {
     console.warn("[Sections] error for", songId, ":", err.message);
+    // Safe defaults already set at top of function — no stale state leak
   }
 }
 
@@ -1268,9 +1274,9 @@ setInterval(() => {
   if (!localPlaying) return;
 
   const elapsed = localPlayOffset + (Date.now() - localPlayStartTime) / 1000;
-  const duration = state.duration || 120;
+  const duration = state.duration > 0 ? state.duration : 120;
 
-  if (elapsed >= duration) {
+  if (elapsed >= duration && duration > 0) {
     // Song finished — advance to next
     localStop();
     if (state.songIndex < state.totalSongs) {
@@ -1917,7 +1923,7 @@ app.post("/api/local/setlist/load", (req, res) => {
 app.get("/api/chordpro/:songId", (req, res) => {
   const songId = req.params.songId;
   // Sanitize: prevent directory traversal — only allow alphanumeric, underscores, hyphens
-  if (!/^[a-zA-Z0-9_\-]+$/.test(songId)) {
+  if (typeof songId !== "string" || !songId.trim() || songId.includes("..") || songId.includes("/")) {
     return res.status(400).json({ error: "Invalid song ID" });
   }
   // Try exact slug match first
@@ -1950,7 +1956,7 @@ app.get("/api/chordpro/:songId", (req, res) => {
 // Returns the merged meta.json contents for a song.
 app.get("/api/song-data/:songId", (req, res) => {
   const songId = req.params.songId;
-  if (!/^[a-zA-Z0-9_\-]+$/.test(songId)) {
+  if (typeof songId !== "string" || !songId.trim() || songId.includes("..") || songId.includes("/")) {
     return res.status(400).json({ error: "Invalid song ID" });
   }
   // Try exact folder name, then slug fallback
