@@ -459,7 +459,9 @@ function parseChoproDirectiveSections(text) {
 // Lines without either get time=null, bar=null and the client estimates position.
 function extractLyricLines(choproText) {
   const lines = [];
-  const rawLines = (choproText || "").split("\n");
+  // Cap at 1MB — larger files are likely corrupted
+  const text = (choproText && choproText.length > 1048576) ? choproText.substring(0, 1048576) : (choproText || "");
+  const rawLines = text.split("\n");
 
   function isDirective(s) { return /^\{/.test(s.trimStart()); }
   function isBareChord(s) {
@@ -532,6 +534,9 @@ function extractLyricLines(choproText) {
     // Skip metadata lines
     const lower = clean.toLowerCase();
     if (/^(song|artist|tuning|capo|tabbed|standard|no chords|let ring|palm mute)[:\s]/i.test(lower)) continue;
+
+    // Cap at 500 lyric lines — prevents memory bombs from corrupted chopro files
+    if (lines.length >= 500) break;
 
     lines.push({ time, bar, text: clean, type: inSolo ? "solo" : "lyric" });
   }
@@ -748,15 +753,20 @@ function sectionsFromChordpro(choproSections, bpm, lyrics, durationBars) {
 function resolveMetaPath(songId) {
   const exactPath = path.join(REAPER_SONGS_PATH, songId, "meta.json");
   if (fs.existsSync(exactPath)) return exactPath;
+  // O(1) lookup via slug map
+  const folder = slugFolderMap.get(songId.toLowerCase());
+  if (folder) {
+    const fpath = path.join(REAPER_SONGS_PATH, folder, "meta.json");
+    if (fs.existsSync(fpath)) return fpath;
+  }
+  // Fallback: O(n) scan (only if map not populated)
   try {
     const folders = fs.readdirSync(REAPER_SONGS_PATH, { withFileTypes: true })
       .filter(d => d.isDirectory());
-    for (const folder of folders) {
-      const slug = folder.name.toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_|_$/g, "");
+    for (const f of folders) {
+      const slug = f.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
       if (slug === songId) {
-        const fpath = path.join(REAPER_SONGS_PATH, folder.name, "meta.json");
+        const fpath = path.join(REAPER_SONGS_PATH, f.name, "meta.json");
         if (fs.existsSync(fpath)) return fpath;
       }
     }
@@ -764,19 +774,21 @@ function resolveMetaPath(songId) {
   return null;
 }
 
-// Resolve song.chopro path with slug fallback
 function resolveChoproPath(songId) {
   const exactPath = path.join(REAPER_SONGS_PATH, songId, "song.chopro");
   if (fs.existsSync(exactPath)) return exactPath;
+  const folder = slugFolderMap.get(songId.toLowerCase());
+  if (folder) {
+    const fpath = path.join(REAPER_SONGS_PATH, folder, "song.chopro");
+    if (fs.existsSync(fpath)) return fpath;
+  }
   try {
     const folders = fs.readdirSync(REAPER_SONGS_PATH, { withFileTypes: true })
       .filter(d => d.isDirectory());
-    for (const folder of folders) {
-      const slug = folder.name.toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_|_$/g, "");
+    for (const f of folders) {
+      const slug = f.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
       if (slug === songId) {
-        const fpath = path.join(REAPER_SONGS_PATH, folder.name, "song.chopro");
+        const fpath = path.join(REAPER_SONGS_PATH, f.name, "song.chopro");
         if (fs.existsSync(fpath)) return fpath;
       }
     }
@@ -819,6 +831,7 @@ const io = new SocketIOServer(server, {
   pingInterval: 2000,
   pingTimeout: 5000,
   transports: ["polling", "websocket"],
+  maxHttpBufferSize: 65536, // 64KB — prevents giant message DOS
 });
 
 app.use(express.static(PUBLIC_DIR, {
@@ -1055,6 +1068,9 @@ function ensureSongLibrary() {
         try {
           const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
           const id = dir.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+          // Build slug→folder map for O(1) lookups
+          slugFolderMap.set(id, dir.name);
+          slugFolderMap.set(dir.name.toLowerCase(), dir.name);
           songLibrary.push({
             id,
             title: meta.title || dir.name,
@@ -1078,6 +1094,9 @@ function ensureSongLibrary() {
   }
 }
 
+// Slug→folder map — built during ensureSongLibrary, used by resolveMetaPath/resolveChoproPath
+const slugFolderMap = new Map();
+
 function processSongData(songId) {
   const metaPath = resolveMetaPath(songId);
   const choproPath = resolveChoproPath(songId);
@@ -1085,11 +1104,21 @@ function processSongData(songId) {
   state.lyricLines = [];
   state.lyricSync = { ok: false, annotatedPct: 0, totalLines: 0, annotatedLines: 0, warnings: ["Lyric data unavailable"] };
   state.sections = [];
-  state.duration = 240; // safe default: 4 minutes
+  state.duration = 240;
   try {
     if (metaPath && fs.existsSync(metaPath)) {
       const metaRaw = fs.readFileSync(metaPath, "utf-8");
       const meta = JSON.parse(metaRaw);
+      // Validate required field types — prevent undefined/NaN crashes downstream
+      if (typeof meta.bpm !== 'number' || !isFinite(meta.bpm) || meta.bpm <= 0 || meta.bpm > 400) {
+        console.warn("[Sections] Invalid BPM for", songId, ":", meta.bpm);
+      }
+      if (!Array.isArray(meta.lyrics)) {
+        console.warn("[Sections] Invalid lyrics for", songId, ":", typeof meta.lyrics);
+      }
+      if (typeof meta.duration_bars !== 'number' || !isFinite(meta.duration_bars) || meta.duration_bars < 0) {
+        meta.duration_bars = 128;
+      }
       let choproText = "";
       if (choproPath && fs.existsSync(choproPath)) {
         choproText = fs.readFileSync(choproPath, "utf-8");
@@ -1178,12 +1207,13 @@ function localPlay() {
   localPlaying = true;
   state.playing = true;
   broadcastState();
+  startLocalTick();
   console.log("[Local] Play from", localPlayOffset.toFixed(1) + "s");
 }
 
 function localPause() {
   if (localPlaying) {
-    localPlayOffset = localPlayOffset + (Date.now() - localPlayStartTime) / 1000;
+    localPlayOffset = localPlayOffset + Math.max(0, (Date.now() - localPlayStartTime) / 1000);
     state.position = localPlayOffset;
   }
   localPlaying = false;
@@ -1197,6 +1227,7 @@ function localStop() {
   localPlayOffset = 0;
   state.position = 0;
   state.playing = false;
+  stopLocalTick();
   broadcastState();
   console.log("[Local] Stop");
 }
@@ -1277,33 +1308,37 @@ function localJumpToSong(songIdx, songTitle) {
 
 // 30fps tick — only active when local playback is running
 // Position advances every ~33ms. Broadcasts at ~10Hz to all clients.
+// Interval runs only when localPlaying is true — cleared on stop.
 let lastBroadcastPos = -1;
-setInterval(() => {
-  if (!localPlaying) return;
+let localTickInterval = null;
 
-  const elapsed = localPlayOffset + (Date.now() - localPlayStartTime) / 1000;
-  const duration = state.duration > 0 ? state.duration : 120;
-
-  if (elapsed >= duration && duration > 0) {
-    // Song finished — advance to next
-    localStop();
-    if (state.songIndex < state.totalSongs) {
-      console.log("[Local] Song finished, advancing to next");
-      localJumpToSong(state.songIndex + 1);
-      localPlay();
+function startLocalTick() {
+  if (localTickInterval) return;
+  localTickInterval = setInterval(() => {
+    if (!localPlaying) return;
+    const elapsed = localPlayOffset + (Date.now() - localPlayStartTime) / 1000;
+    const duration = state.duration > 0 ? state.duration : 120;
+    if (elapsed >= duration && duration > 0) {
+      localStop();
+      if (state.songIndex < state.totalSongs) {
+        console.log("[Local] Song finished, advancing to next");
+        localJumpToSong(state.songIndex + 1);
+        localPlay();
+      }
+      return;
     }
-    return;
-  }
+    state.position = elapsed;
+    state.playing = true;
+    if (Math.floor(elapsed * 10) !== lastBroadcastPos) {
+      lastBroadcastPos = Math.floor(elapsed * 10);
+      broadcastState();
+    }
+  }, 33);
+}
 
-  state.position = elapsed;
-  state.playing = true;
-
-  // Broadcast at ~10fps (every 100ms of playback time)
-  if (Math.floor(elapsed * 10) !== lastBroadcastPos) {
-    lastBroadcastPos = Math.floor(elapsed * 10);
-    broadcastState();
-  }
-}, 33);
+function stopLocalTick() {
+  if (localTickInterval) { clearInterval(localTickInterval); localTickInterval = null; }
+}
 
 // Restart local playback when new song data arrives
 function onSongLoaded() {
