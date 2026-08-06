@@ -73,12 +73,16 @@ function isDirective(line) {
 }
 
 function isBareChord(line) {
-  const s = line.trim();
+  let s = line.trim();
   if (!s) return false;
+  // Unwrap /slash/ chord markers: /Am7/ /Dm7/ → Am7 Dm7
+  if (s.charAt(0) === '/' && s.lastIndexOf('/') === s.length - 1) {
+    s = s.substring(1, s.length - 1).trim();
+  }
   if (/^[A-Za-z0-9#bm]+(?:\s*\/[A-Za-z0-9#b]+)?(?:\s+[A-Za-z0-9#bm]+(?:\s*\/[A-Za-z0-9#b]+)?)*$/.test(s)) {
     // Heuristic: if every "word" looks like a chord name, it's a bare chord line
     const words = s.split(/\s+/);
-    const chordLike = words.filter(w => /^[A-G][#b]?(?:m|dim|aug|sus[24]|add\d+|7b?9?|maj7?|dim7?|aug7?|6|9|11|13)?(?:\/[A-G][#b]?)?$/.test(w));
+    const chordLike = words.filter(w => /^[A-G][#b]?(?:m7?|dim|aug|sus[24]|add\d+|5|7b?9?|maj7?|dim7?|aug7?|6|9|11|13)?(?:\/[A-G][#b]?)?$/.test(w));
     return chordLike.length >= words.length * 0.7;
   }
   return false;

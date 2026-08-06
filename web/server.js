@@ -463,14 +463,19 @@ function extractLyricLines(choproText) {
 
   function isDirective(s) { return /^\{/.test(s.trimStart()); }
   function isBareChord(s) {
-    const trimmed = s.trim();
+    let trimmed = s.trim();
     if (!trimmed) return false;
+    // Unwrap /slash/ chord markers: /Am7/ /Dm7/ → Am7 Dm7
+    if (trimmed.charAt(0) === '/' && trimmed.lastIndexOf('/') === trimmed.length - 1) {
+      trimmed = trimmed.substring(1, trimmed.length - 1).trim();
+    }
     const words = trimmed.split(/\s+/);
-    const chordLike = words.filter(w => /^[A-G][#b]?(?:m|dim|aug|sus[24]|add\d+|7b?9?|maj7?|dim7?|aug7?|6|9|11|13)?(?:\/[A-G][#b]?)?$/.test(w));
+    const chordLike = words.filter(w => /^[A-G][#b]?(?:m7?|dim|aug|sus[24]|add\d+|5|7b?9?|maj7?|min7?|dim7?|aug7?|6|9|11|13)?(?:\/[A-G][#b]?)?$/.test(w));
     return chordLike.length >= words.length * 0.7 && chordLike.length > 0;
   }
   function stripChords(s) {
-    return s.replace(/\[.*?\]/g, "").trim();
+    // Strip [bracket] chords and /slash/ chord markers
+    return s.replace(/\[.*?\]/g, "").replace(/\/[A-G][#b]?(?:m7?|dim|aug|sus[24]|add\d+|5|7b?9?|maj7?|min7?|dim7?|aug7?|6|9|11|13)?(?:\/[A-G][#b]?)?\//g, "").trim();
   }
 
   let inSolo = false;

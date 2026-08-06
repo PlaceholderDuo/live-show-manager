@@ -69,11 +69,15 @@ function slugify(s) {
 function isDirective(line) { return /^\{/.test(line.trimStart()); }
 
 function isBareChord(s) {
-  const t = s.trim();
+  let t = s.trim();
   if (!t) return false;
+  // Unwrap /slash/ chord markers: /Am7/ /Dm7/ → Am7 Dm7
+  if (t.charAt(0) === '/' && t.lastIndexOf('/') === t.length - 1) {
+    t = t.substring(1, t.length - 1).trim();
+  }
   const words = t.split(/\s+/);
   const chordLike = words.filter(w =>
-    /^[A-G][#b]?(?:m|dim|aug|sus[24]|add\d+|7b?9?|maj7?|dim7?|aug7?|6|9|11|13)?(?:\/[A-G][#b]?)?$/.test(w)
+    /^[A-G][#b]?(?:m7?|dim|aug|sus[24]|add\d+|5|7b?9?|maj7?|min7?|dim7?|aug7?|6|9|11|13)?(?:\/[A-G][#b]?)?$/.test(w)
   );
   return chordLike.length >= words.length * 0.7 && chordLike.length > 0;
 }
@@ -367,23 +371,19 @@ function verifySong(folderName) {
   if (annotatedTimes.length > 1) {
     let timeOk = true;
     const timeReversals = [];
+    // Build line-index map for annotated times
+    const timeIndices = [];
+    for (let i = 0; i < lyricLines.length; i++) {
+      if (lyricLines[i].time !== null) timeIndices.push(i);
+    }
     for (let i = 1; i < annotatedTimes.length; i++) {
       if (annotatedTimes[i] < annotatedTimes[i - 1] - 0.1) {
         timeOk = false;
-        timeReversals.push(`@${annotatedTimes[i - 1].toFixed(1)}→@${annotatedTimes[i].toFixed(1)} at line ${annotatedTimes_indices[i] || i}`);
+        const lineIdx = timeIndices[i] !== undefined ? timeIndices[i] + 1 : i;
+        timeReversals.push(`@${annotatedTimes[i - 1].toFixed(1)}→@${annotatedTimes[i].toFixed(1)} at line ${lineIdx}`);
       }
     }
     if (!timeOk) {
-      // Find indices for display
-      const timeAnnotated = [];
-      for (let i = 0; i < lyricLines.length; i++) {
-        if (lyricLines[i].time !== null) timeAnnotated.push(i);
-      }
-      for (let r = 0; r < timeReversals.length; r++) {
-        if (r < timeAnnotated.length) {
-          timeReversals[r] = timeReversals[r].replace(/line \d+/, "line " + (timeAnnotated[r] + 1));
-        }
-      }
       errors.push(`@time values decrease: ${timeReversals.slice(0, 3).join(", ")}${timeReversals.length > 3 ? " (+" + (timeReversals.length - 3) + " more)" : ""}`);
       checks.push({ id: "time-monotonic", status: ERROR, detail: `${timeReversals.length} reversals` });
     } else {
