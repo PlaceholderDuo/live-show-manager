@@ -363,6 +363,36 @@ function verifySong(folderName) {
     checks.push({ id: "monotonic", status: OK, detail: "N/A (< 2 annotations)" });
   }
 
+  // ══ 3b. @time monotonicity ══
+  if (annotatedTimes.length > 1) {
+    let timeOk = true;
+    const timeReversals = [];
+    for (let i = 1; i < annotatedTimes.length; i++) {
+      if (annotatedTimes[i] < annotatedTimes[i - 1] - 0.1) {
+        timeOk = false;
+        timeReversals.push(`@${annotatedTimes[i - 1].toFixed(1)}→@${annotatedTimes[i].toFixed(1)} at line ${annotatedTimes_indices[i] || i}`);
+      }
+    }
+    if (!timeOk) {
+      // Find indices for display
+      const timeAnnotated = [];
+      for (let i = 0; i < lyricLines.length; i++) {
+        if (lyricLines[i].time !== null) timeAnnotated.push(i);
+      }
+      for (let r = 0; r < timeReversals.length; r++) {
+        if (r < timeAnnotated.length) {
+          timeReversals[r] = timeReversals[r].replace(/line \d+/, "line " + (timeAnnotated[r] + 1));
+        }
+      }
+      errors.push(`@time values decrease: ${timeReversals.slice(0, 3).join(", ")}${timeReversals.length > 3 ? " (+" + (timeReversals.length - 3) + " more)" : ""}`);
+      checks.push({ id: "time-monotonic", status: ERROR, detail: `${timeReversals.length} reversals` });
+    } else {
+      checks.push({ id: "time-monotonic", status: OK, detail: "increasing" });
+    }
+  } else {
+    checks.push({ id: "time-monotonic", status: OK, detail: "N/A (< 2 time annotations)" });
+  }
+
   // ══ 4. Bar range validity ══
   const maxExpectedBar = durationBars + 16;
   if (annotatedBars.length > 0) {

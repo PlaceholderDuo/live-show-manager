@@ -45,7 +45,7 @@ function httpGetJson(host, path, retries) {
 
 function parseLRC(text) {
   if (!text) return [];
-  const re = /^\[(\d{2}):(\d{2})[.:](\d{2,3})\]\s*(.*)/gm;
+  const re = /^\[(\d+):(\d{2})[.:](\d{2,3})\]\s*(.*)/gm;
   const lines = [];
   let m;
   while ((m = re.exec(text)) !== null) {
@@ -217,6 +217,9 @@ function processSongChopro(songDir, meta, lrcLines) {
   }
 
   const newContent = lines.join("\n");
+  if (isForce) {
+    try { fs.copyFileSync(choproPath, choproPath + ".lrc-bak"); } catch {}
+  }
   fs.writeFileSync(choproPath, newContent, "utf-8");
   console.log(`  WROTE @time=N for ${matches.length} lines (${Object.keys(timePerLine).length} unique)`);
   return true;

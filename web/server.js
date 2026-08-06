@@ -495,13 +495,15 @@ function extractLyricLines(choproText) {
     // Old prefix format: @time=N @bar=N
     const timeMatch = clean.match(/@time\s*=\s*([\d]+\.?\d*)/i);
     if (timeMatch) {
-      time = parseFloat(timeMatch[1]);
+      const t = parseFloat(timeMatch[1]);
+      if (!isNaN(t)) time = t;
       clean = clean.replace(/@time\s*=\s*[\d]+\.?\d*/i, "");
     }
 
     const barMatch = clean.match(/@bar\s*=\s*(\d+)/i);
     if (barMatch) {
-      bar = parseInt(barMatch[1], 10);
+      const b = parseInt(barMatch[1], 10);
+      if (!isNaN(b)) bar = b;
       clean = clean.replace(/@bar\s*=\s*\d+/i, "");
     }
 
@@ -509,7 +511,8 @@ function extractLyricLines(choproText) {
     if (time === null) {
       const trailMatch = clean.match(/\s@([\d]+\.?\d{1,2})\s*$/);
       if (trailMatch) {
-        time = parseFloat(trailMatch[1]);
+        const t = parseFloat(trailMatch[1]);
+        if (!isNaN(t)) time = t;
         clean = clean.replace(/\s@[\d]+\.?\d{1,2}\s*$/, "");
       }
     }
