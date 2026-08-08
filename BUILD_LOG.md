@@ -1,5 +1,135 @@
 # Live Show Manager — BUILD_LOG
 
+# ═══════════════════════════════════════════════════════════
+# SESSION HANDOFF — 2026-08-08 (night) — READ THIS FIRST
+# ═══════════════════════════════════════════════════════════
+# ⚠️  CRITICAL: This session must be resumed by an IMAGE-CAPABLE model.
+#     The core unfinished work is RENDERING/VISUAL issues on the stage HUD
+#     (`live-stage-hud/web/public/hud.html`). The next model MUST take
+#     screenshots (Puppeteer → PNG) and LOOK at them; text-only DOM inspection
+#     is insufficient to fix the remaining visual problems.
+
+## THE ONE TRUE ARCHITECTURE (this got "lost" repeatedly — internalize it)
+
+- **REAPER** (`~/Library/Application Support/REAPER/Scripts/Live Show Manager/`):
+  is ONLY a guitar FX chain (one delay that needs BPM). We never touch its
+  transport. The Lua runner is a passive observer: reads position, pushes BPM
+  to REAPER for delay sync, tracks its OWN clock for the HUD.
+- **Akai Force** = master click + transport. NOT integrated yet (future work).
+- **Live Show Manager server** (`web/server.js`, port **`:3000`**): the show
+  brain. localPlay engine, control plane (ARM/PLAY/STOP), count-in, lyric
+  timing. Started via launchd (`web/control.sh`).
+- **Singer server** (`~/Music/iPhoneLiveServer/server/index.js`, port **`:3300`**):
+  TUI + singer queue + band set. TUI = `scripts/tui.js`.
+- **Stage HUD + phone controller** (`~/Documents/projects/live-stage-hud/web/public/`):
+  hud.html/css/js + controller.js. NOTE: hud.html/css/js are SYMLINKED into
+  the :3000 public dir — edit in live-stage-hud, the :3000 server serves them.
+- **Song data**: `~/ReaperSongs/<Song>/{meta.json,song.chopro}`. `@time=N`
+  (seconds) is the LRCLIB ground-truth lyric timing.
+
+## SHOW FLOW (final, verified)
+1. Song ends → server loads NEXT song's lyrics (teleprompter shows it) but does
+   NOT start it; BPM stays at previous tempo.
+2. PLAY/NEXT → server switches to the loaded song's BPM, starts a **count-in**
+   (4→3→2→1 at song BPM, position held at 0 during count-in).
+3. Song begins → position clock advances, lyrics scroll, click at song tempo.
+
+## WHAT WORKS (proven by tests + headless runs)
+- `npm test` in `web/`: **27/27 pass** (transport + control-plane integration + browser)
+- `node tools/prove-it.js`: ~75 checks (servers, ARM, PLAY, STOP, clock accuracy,
+  next/prev, tempo changes, stress, debug endpoint)
+- `node tools/test-show-ready.js`: 39 checks (SHOW READY exit 0)
+- Count-in: fires from ALL paths now (controlPlay + start_song socket action),
+  position held at 0 during count-in (verified via puppeteer)
+- Metadata 3x (SONG/KEY/BPM=60px, NEXT=30px @1080p)
+- Chords render clean (no brackets) colored per-root (circle mode) — after
+  fixing config that was `chord_color_mode: flavor` (all yellow → looked gone)
+- Sync warning in-flow (no header overlap), only for serious issues
+- Heartbeat/SIGNAL-LOST gone (keepalive broadcast every 3s)
+- Duration correct via `lrc_duration_sec` (191s not 1102s)
+- Beat transitions 0.25s CSS
+
+## STILL BROKEN / RENDERING (THE ACTUAL REMAINING WORK — needs IMAGE EYES)
+Verified DOM-level that the HUD html for the four noticed items was improved
+(C1 timeline 95%→32%, sync warn moved, count-in present, ring removed), but the
+USER reports the SCREEN still looks wrong. **Take a screenshot of hud.html
+while playing a song and LOOK at it.** Suspects:
+1. **Section bar / timeline** (`#hudSections` + `.timeline-block`): user said
+   earlier "C1 shows 95% of the song" and it "stays around 5% filled the whole
+   song". DOM shows `[V1]:1px [V2]:1px [C1]:<mx>px`. Section data comes from
+   `web/server.js computeSections()` — meta.lyrics is sparse (≤2 entries) on
+   many songs → `sectionsFromChordpro()` distributes wrong. Needs visual verify.
+2. **Layout/overlap**: the earlier screenshot showed the SYNC banner overlapping
+   song metadata + bar widget. We changed it to in-flow, but the metadata is now
+   3x huge — RE-VERIFY nothing overlaps at 1080p (especially with long song names).
+3. **Count-in** must be VISUALLY confirmed as an overlay on the real display.
+4. Full-screen look: battery of everything at once — header, sections strip,
+   lyrics engine, footer (time row) — no clipping/overlap/blank spots.
+
+## DEBUG DASHBOARD (open during any live test)
+`http://localhost:3000/debug.html` — shows Bridge / Singer / TUI side by side
+with cross-system mismatch checks. TUI posts its state every render.
+
+## HOW TO SCREENSHOT THE HUD (image-capable model MUST do this)
+Use Puppeteer (headless) to PNG the HUD while the local engine is playing:
+```js
+// in web/: node -e "..." (puppeteer already a dependency)
+const puppeteer = require('puppeteer');
+(async()=>{
+  const b=await puppeteer.launch({headless:true});
+  const p=await b.newPage();
+  await p.setViewport({width:1920,height:1080});
+  await p.goto('http://localhost:3000/hud.html',{waitUntil:'networkidle0'});
+  // arm+play first so lyrics/beats are active
+  await fetch('http://localhost:3000/api/control/arm',{method:'POST',headers:{'content-type':'application/json'},body:'{\"armed\":true}'});
+  await fetch('http://localhost:3000/api/control/play',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+  await new Promise(r=>setTimeout(r,5000));
+  await p.screenshot({path:'/tmp/hud-live.png'});
+  await b.close();
+})();
+```
+
+## LIVE STATE RIGHT NOW (for resume)
+- :3000 bridge running (launchd). :3300 singer running. TUI running in a
+  Terminal.app window (PID listed in ps; needs a REAL terminal, can't be spawned
+  headlessly — `script`/PTY tricks fail on `stdin.isTTY`).
+- Bridge: song=After Midnight, armed=true, playing=false, pos=0, bpm=131.6.
+- Singer: A Boy Named Sue, status=playing (slightly stale vs bridge — normal
+  until ARM re-syncs).
+- debug.html checks show a WARN about After Midnight lyric timing estimated /
+  last lyric 102s < 194s region — known song-data issue, not a code bug.
+- Leftover `data/control_command.json` (`{"cmd":"stage","dir":1}`) exists —
+  harmless unless runner connects.
+
+## GIT (both repos pushed to GitHub `main` as of this session)
+- `PlaceholderDuo/live-show-manager` (server/runner/tests)
+- `PlaceholderDuo/live-stage-hud` (HUD phone)
+
+## TASKS THIS SESSION (proven + committed)
+- Decoupled REAPER: runner is passive observer (no Main_OnCommand)
+- Null-coalescing fix, singer ARM sync, TUI debug state endpoint
+- Count-in generation + HUD local 50ms countdown clock
+- Timing parser uses lrc_duration_sec; sections use real @bar
+- Metadata 3x, chords clean (no brackets) + circle colors, countdown ring removed
+- Extended test harness (integration, prove-it, test-show-ready)
+- Fixed song-change stale-lyrics (wrong songId refetch + currentSongId reset)
+- start_song socket action now routes through controlPlay (count-in)
+
+## NEXT SESSION TODO (in priority order)
+1. **SCREENSHOT the HUD while playing. LOOK at it.** Fix remaining visual/
+   layout issues (section timeline proportions, any overlap at 3x metadata,
+   count-in overlay appearance).
+2. If section pills still wrong, improve section detection to use real @bar
+   positions across ALL songs (many have sparse meta.lyrics).
+3. Consider `chord_color_mode` default → keep `circle` (user prefers distinct
+   chord colors).
+4. Optional future: Akai Force integration (MIDI clock) for click/transport.
+5. Re-run `npm test`, `prove-it`, `test-show-ready` after any change.
+
+# ═══════════════════════════════════════════════════════════
+# (older entries below)
+# ═══════════════════════════════════════════════════════════
+
 ## 2026-08-08: Architecture Reset — REAPER is a guitar processor, not the clock
 
 ### Summary
