@@ -1836,3 +1836,26 @@ The `reaper/` library metadata also changed (90+ chopro files, meta.json updates
 - PLAY → countIn `{active:true, bpm: songBpm}`, position frozen at 0, then advances after count-in completes.
 - Song-end loads next stopped, BPM preserved, then PLAY re-resolves to the loaded song's BPM (81.4 → 131.6).
 - `npm test`: 27/27 pass.
+
+## 2026-08-08 (Late night): Count-in via every path, metadata 2x, countdown ring removed, GitHub push
+
+### Count-in now fires from ALL play paths
+- **Bug:** the phone controller's START button sent the `start_song` socket action, which called `localPlay()` DIRECTLY — bypassing `controlPlay()` and skipping the count-in (lyrics started instantly, no wait).
+- **Fix:** `server.js` `case "start_song"` now routes through `controlPlay()`, so the count-in always runs and position is held at 0 until the count-in completes, then the song starts.
+- **Verified headless:** `start_song` → `countIn.active=true`, overlay visible, position held at 0.0 during count-in.
+- Also enabled `count_in_display: enabled` on the :3300 teleprompter config (it was `disabled`), so the standalone teleprompter shows its count-in too.
+
+### Metadata section scaled 2x
+- `.meta-row-clean` font-size `1.25rem → 2.5rem` in `hud.css` (2x). Header gap increased to match.
+
+### Countdown ring removed
+- Removed the circular countdown ring ("time remaining pie") from the HUD: its HTML (`#countdownRing` SVG), its JS (`updateCountdownRing`/`renderRingTickMarks` + element refs), and its CSS (`.countdown-ring`, `.ring-*` classes/keyframes).
+- Footer time (elapsed/total) in `#footerTimeRow` retained. Note this in future design docs.
+
+### Git / GitHub
+- Pushed both repos to GitHub:
+  - `live-show-manager` (REAPER bridge/server/tests) → `main`
+  - `live-stage-hud` (HUD/controller) → `main`
+
+### Verified
+- Metadata 2x, ring absent, start_song count-in holds position, 27/27 tests pass.

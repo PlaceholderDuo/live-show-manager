@@ -1690,9 +1690,10 @@ io.on("connection", (socket) => {
             console.log("[Start] Ignored — show not armed");
             break;
           }
-          localJumpToSong(state.songIndex + 1);
-          localPlay();
-          console.log(`[Start] Local: jump to song ${state.songIndex}`);
+          // Route through the control plane so the count-in runs (position is
+          // held until the count-in completes, then the song starts). Without
+          // this, lyrics start instantly with no count-in.
+          controlPlay();
           break;
         }
         controlPlay();
