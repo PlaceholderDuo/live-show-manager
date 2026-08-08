@@ -152,6 +152,14 @@ function Library.scanFolder(folder)
                 song.bpm = meta.bpm
             end
 
+            if meta.bpm_verified ~= nil then
+                song.bpm_verified = (meta.bpm_verified == true)
+            end
+
+            if meta.time_sig then
+                song.time_sig = meta.time_sig
+            end
+
             if meta.key then
                 song.key = meta.key
             end
@@ -164,6 +172,52 @@ function Library.scanFolder(folder)
             if meta.duration_bars then
                 song.duration_bars =
                     meta.duration_bars
+            end
+
+            -- Song length for the REAPER region. Authoritative source, in order:
+            --   1. meta.lrc_duration_sec  (real track length from LRCLIB)
+            --   2. last CLEAN chopro @time + outro  (outlier-rejected like timing.js)
+            --   3. meta.duration_bars  (fallback)
+            -- This makes new songs correct automatically — the region always
+            -- matches the real recording, never a corrupt bar-derived value.
+            local durSec = nil
+            if meta.lrc_duration_sec and meta.lrc_duration_sec > 0 then
+                durSec = meta.lrc_duration_sec
+            else
+                local choproPath =
+                    FS.join(
+                        folderPath,
+                        "song.chopro"
+                    )
+                if FS.exists(choproPath) then
+                    local chRaw = FS.read(choproPath) or ""
+                    local times = {}
+                    for line in (chRaw .. "\n"):gmatch("(.-)\n") do
+                        local t = line:match("@time%s*=%s*([%d.]+)")
+                        if t then
+                            local tn = tonumber(t)
+                            if tn and tn > 0 then table.insert(times, tn) end
+                        end
+                    end
+                    if #times >= 4 then
+                        table.sort(times)
+                        local med = times[math.floor(#times / 2) + 1]
+                        local maxKeep = math.max(600, med * 3)
+                        local lastClean = 0
+                        for _, tn in ipairs(times) do
+                            if tn <= maxKeep and tn > lastClean then lastClean = tn end
+                        end
+                        if lastClean > 0 then
+                            durSec = math.min(600, lastClean + 12)
+                        end
+                    end
+                end
+            end
+            if durSec and durSec > 0 then
+                local bpm = song.bpm or meta.bpm or 120
+                if bpm and bpm > 0 then
+                    song.duration_bars = math.max(1, math.floor(durSec * bpm / 240))
+                end
             end
 
             if meta.notes then

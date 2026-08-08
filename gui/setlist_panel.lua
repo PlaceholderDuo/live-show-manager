@@ -7,6 +7,9 @@
 
 local SetlistPanel = {}
 
+local Util =
+    App.require("backend.util")
+
 
 
 function SetlistPanel.render(
@@ -124,34 +127,19 @@ function SetlistPanel.render(
     reaper.ImGui_PushStyleColor(
         ctx,
         reaper.ImGui_Col_Button(),
-        {
-            0.2,
-            0.2,
-            0.2,
-            1.0
-        }
+        Util.rgba(0.2, 0.2, 0.2, 1.0)
     )
 
     reaper.ImGui_PushStyleColor(
         ctx,
         reaper.ImGui_Col_ButtonHovered(),
-        {
-            0.3,
-            0.3,
-            0.3,
-            1.0
-        }
+        Util.rgba(0.3, 0.3, 0.3, 1.0)
     )
 
     reaper.ImGui_PushStyleColor(
         ctx,
         reaper.ImGui_Col_ButtonActive(),
-        {
-            0.25,
-            0.25,
-            0.25,
-            1.0
-        }
+        Util.rgba(0.25, 0.25, 0.25, 1.0)
     )
 
     build = reaper.ImGui_Button(

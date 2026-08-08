@@ -1,6 +1,116 @@
 # Live Show Manager — BUILD_LOG
 
-## 2026-07-11: Official Tab GPIF Discovery & HUD v2 Polish
+## 2026-08-08: Architecture Reset — REAPER is a guitar processor, not the clock
+
+### Summary
+
+Major architecture correction: REAPER is a guitar signal chain with a single delay FX that needs BPM sync. We do NOT control REAPER's transport — no play, stop, seek, or record from our code. The runner is now a passive observer that pushes BPM to REAPER (for delay sync) and tracks its own position for the HUD. The Akai Force is the master click + transport. We also built a comprehensive self-testing harness (`test-show-ready.js`) and a three-system debug dashboard (`debug.html`).
+
+---
+
+### Key Architecture Decision
+
+| Before | After |
+|--------|-------|
+| Runner called `Main_OnCommand(40044)` to start REAPER transport | Runner sets `playing=true` on its own wall-clock |
+| Runner called `Main_OnCommand(40045)` to stop REAPER transport | Runner sets `playing=false`, stages next song |
+| Runner called `_seekTo()` to move REAPER play cursor | No seeking — position tracked independently |
+| `_haltTransport()` stopped REAPER at launch | Removed entirely — REAPER runs freely |
+| `_loop()` derived playing state from `GetPlayStateEx` | `_loop()` uses our clock when playing, passive read when stopped |
+| `_cmdPlay()` included count-in pre-roll + transport start | `_cmdPlay()` sets `self.playing=true`, starts `_playStartTime` |
+| Count-in/click from REAPER | Count-in/click from Akai Force (separate system) |
+
+**What we KEPT:** `_setSongBpm()` and `_setSongTimeSig()` — these push BPM + meter to REAPER so the delay FX is tempo-synced. These are SAFE (guarded by `bpm_verified` and `_hasTempoSyncedItems()`).
+
+### Runner Changes — `runner/runner.lua`
+
+- **Removed:** `_haltTransport()` function (deleted), `_seekTo()` function (deleted)
+- **Rewrote `_cmdPlay()`:** Sets `self.playing=true`, `self.position=0`, `self._playStartTime=time_precise()`. Pushes BPM. No count-in, no transport start, no `Main_OnCommand`.
+- **Rewrote `_cmdStop()`:** Sets `self.playing=false`, `self.position=0`, stages next song. No `Main_OnCommand`.
+- **Rewrote `_loop()`:** When playing, position = `elapsed` seconds from `_playStartTime`. When stopped, passively reads `reaper.GetPlayPosition()`. Song lookup uses `stagedIndex` when playing, `lookupByPosition` when stopped.
+- **Cleaned `start()`:** No transport halt. Just initializes state.
+
+**To deploy:** Reload `main.lua` in REAPER (Actions → Load ReaScript).
+
+### Server Changes — `web/server.js`
+
+- **Fixed null coalescing:** `state.currentSong` changed from `||` to explicit `!== undefined` check so `null` from bridge clears stale titles (was the "songIndex=0 but currentSong=Dock of the Bay" bug).
+- **Added singer sync on ARM:** `syncBandSetToSinger()` clears singer's band_queue and adds all songs from active setlist. Called by `controlArm(true)`.
+- **Added TUI debug endpoint:** `POST /api/debug/tui-state` receives TUI internal state every render.
+- **Added TUI to debug snapshot:** `/api/debug/snapshot` now includes TUI state + cross-system checks (TUI-vs-Bridge song mismatch, TUI-vs-Bridge playing drift, TUI-vs-Singer queue mismatch).
+- **Isolated test env:** `SESSION_SETLIST_PATH` respects env var override so tests don't corrupt live setlist.
+
+### TUI Changes — `scripts/tui.js`
+
+- **Space key fix:** Uses `reaperState.playing` as authority when bridge is connected (was `queueState.status` from singer). When bridge connected, REAPER's playing state drives stop/play. When disconnected, falls back to singer queue.
+- **Next/Prev in band set:** When `queueView !== 'singers'`, `n`/`b` keys now promote the next band_queue song, load it, and push setlist to bridge. Previously always advanced singer rotation.
+- **Debug state posting:** `postDebugState()` called after every render cycle — POSTs `focus`, `queueView`, `reaperState`, `queueState`, `band_queue` to `:3000/api/debug/tui-state`.
+
+### Debug Dashboard — `web/public/debug.html`
+
+Complete rewrite. Three-column layout showing:
+1. **TRANSPORT** — Bridge / Singer / TUI song titles side-by-side with red mismatch highlighting
+2. **TUI STATE** — Focus, queueView, showMode, band_queue contents, internal status
+3. **LYRIC WINDOW** — Current lyric line + next lines + progress bar
+4. **SONG INTEGRITY** — Region vs audio vs lyric duration comparison
+5. **CHECKS** — Auto-generated cross-system consistency checks
+
+Open `http://localhost:3000/debug.html` to see all three systems' perspective simultaneously.
+
+### Self-Test Harness — `web/tools/test-show-ready.js`
+
+NEW: Full show-readiness self-test. Zero REAPER dependency. 13 phases, 39 checks:
+1. Server startup + setlist load
+2. Initial state (not armed, not playing)
+3. ARM (sets armed, doesn't start playback)
+4. PLAY starts position tracking
+5. Clock accuracy (~1s per wall-clock second)
+6. STOP resets position, stages next song
+7. Re-PLAY from stopped state
+8. PLAY gating (disarmed, already-playing)
+9. Next/Prev navigation through setlist
+10. BPM changes per song
+11. Duration from lyric timing
+12. Lyric sync health (% annotated)
+13. Stress test (rapid ARM/PLAY/STOP/PLAY)
+
+Run: `npm run test:show-ready` or `node tools/test-show-ready.js`
+Exit code 0 = SHOW READY.
+
+### Test Suite Updates
+
+- **`npm test`** now runs 27 tests (was 13): 9 transport + 14 integration + 4 browser
+- **`npm run test:show-ready`** — standalone 39-check lifecycle test
+- `spawn-server.js` now isolates `SESSION_SETLIST_PATH` to temp dir
+- Integration tests cover: setlist load, ARM, PLAY gating, STOP, end-of-set cleanup, null coalescing, region progression
+
+### Live State After Restart
+
+Server restarted via launchd. Bridge has 4-song setlist: Don't Let Me Down, Dock of the Bay, After Midnight, A Boy Named Sue. TUI needs restart to load new code (`stop show` → `start show`).
+
+### Next Steps
+
+1. **Restart TUI:** `stop show` then `start show` to load new space-key and next/prev code
+2. **Reload main.lua in REAPER:** Runner no longer touches REAPER transport
+3. **Run `npm run test:show-ready`** before any show to verify system health
+4. **Open `debug.html`** during rehearsals to catch cross-system mismatches
+5. **Force integration:** Accept MIDI clock or OSC from Force to sync our BPM/position
+
+### Files Touched
+
+```
+runner/runner.lua              — Removed _haltTransport, _seekTo. Rewrote _cmdPlay,
+                                  _cmdStop, _loop, start(). BPM push kept.
+web/server.js                  — Null coalescing fix, singer ARM sync, TUI debug
+                                  endpoint + snapshot, SESSION_SETLIST_PATH env override
+web/public/debug.html          — COMPLETE REWRITE: 3-system dashboard
+web/tools/test-show-ready.js   — NEW: 39-check show-readiness self-test
+web/tests/lib/spawn-server.js  — Setlist path isolation (SESSION_SETLIST_PATH env var)
+web/tests/integration.test.js  — NEW: 14 control-plane integration tests
+web/package.json               — Added test:show-ready script
+scripts/tui.js                 — Space key fix, next/prev band set, debug state posting
+BUILD_LOG.md                   — This entry
+```
 
 ### Summary
 
@@ -939,3 +1049,790 @@ web/tools/dedupe-songs.js       — MOD: Archive to _duplicates/ instead of dele
 ~/.zshrc                        — Added "manage songs" shell function
 BUILD_LOG.md                    — This entry
 ```
+
+---
+
+## 2026-08-07: TUI is now the playlist manager — REAPER hot-follows the live set
+
+### Summary
+
+Workflow change: playlist authoring moved out of the REAPER GUI into the TUI (singer server). The REAPER-side "LAUNCH PERFORMANCE" now ALWAYS follows the TUI's current band set (auto-synced on every edit), instead of a setlist you had to build/save inside the REAPER window. Also fixed ReaImGui version incompatibilities that were blocking the guidance script from launching.
+
+### 1. ReaImGui 0.10 API compat (blocking fix)
+
+`main.lua` crashed at `gui/app.lua:188` because `ImGui_PushStyleColor` in the installed ReaImGui takes exactly `(ctx, col, packed_color)` — one packed 32-bit RGBA integer, not a 4-float or a table.
+
+- Added `Util.rgba(r,g,b,a)` (`backend/util.lua`) → packed int (e.g. green btn = 647581183).
+- Converted all call sites to `reaper.ImGui_PushStyleColor(ctx, Col_*, Util.rgba(...))`:
+  - `gui/app.lua:188` (button + hover)
+  - `gui/setlist_panel.lua:124-155` (BUILD SHOW button, 3 states)
+  - `gui/add_song_dialog.lua:135` (already 4-scalar form → also broken, converted)
+- Verified with `luac -p` + packed-value checks. The GUI now launches and LAUNCH PERFORMANCE is reachable.
+
+### 2. Live-set pipeline (TUI → :3000 → runner)
+
+**Shared source of truth:** `web/server.js` already persisted the active setlist to
+`data/setlists/_last_session.json`. Two changes made it feed REAPER:
+
+- **Enrichment:** every setlist entry is now normalized to `{id (slug), folder, title, artist, bpm}` via `enrichSetlistEntry()` using the `slugFolderMap`/`titleFolderMap` built during `ensureSongLibrary()`. `setActiveSetlist()` and `saveSessionSetlist()` now write the enriched shape (id = slugged folder name matching the Lua library so the runner can join, raw `folder` kept as fallback).
+- **New endpoint** `POST /api/local/setlist/set` — same as `/api/local/setlist` but **never moves the transport/jump to song 1**, so it's safe to call repeatedly mid-show (e.g. editing the set while a song is playing). It just rebases the active set + broadcasts.
+
+The REAPER **runner** hot-follows the file:
+
+- `Runner.loadFollowShow()` reads `data/setlists/_last_session.json`, resolves each song by `id` → raw `folder` → lowercased title against a live `Library.scan()`, builds the region map, and logs `[ShowSrv] Following live set '…' → N songs`.
+- `Runner._followCheck()` (throttled to ~`1.5s`) re-stats the file every loop; when it changes, it rebuilds regions and RE-anchors to the current play cursor (keeps the current song truthful on the phones; BPM push is retriggered safely via `_lastSongKey=nil`).
+- The REAPER GUI button `LAUNCH PERFORMANCE` now just boots the runner against this file (no "save setlist first" gate), showing `FOLLOWING TUI set: <name> (N songs)`.
+
+**The TUI auto-pushes** (`scripts/tui.js`):
+
+- New `pushLiveSetSync()` → `POST :3000/api/local/setlist/set` with `{slug,title}` from the current `band_queue`; debounced 400ms via `scheduleLiveSetSync()`.
+- Hooked onto every band-set mutation: `add`, `add-band`, `remove-band`, `play-band-now`, `import-setlist`, `append-setlist`, plus the Space start/stop toggle.
+- Status line flashes `LIVE set synced → N songs`.
+
+**The TUI's `band_queue` slug = raw `~/ReaperSongs` folder name — identical to the Lua library namespace** — with three-level resolution covering naming mismatches (server slug ≠ Lua slug for names with apostrophes/parens: folder + title fallbacks catch it).
+
+### 3. Verification
+
+- `npm test` (transport 9 + browser 4): **13/13 pass.**
+- Live integration (`spawnServer` temp instance + real REAPER songs):
+  - `POST /api/local/setlist/set` with `{"slug":"Gravity"}`, `"867-5309 Jenny"` → resolved `id`/`folder`/`bpm` (71/71) in `/api/state` + `_last_session.json`.
+- Restarted the launchd bridge (`com.liveshowmanager.bridge`, now PID 14778) so `:3000` serves the new endpoint; live probe `curl :3000/api/local/setlist/set` → `{ok:true, count:2}`.
+- singer `:3300` node server left running; TUI picks up autyun-sync on next `start show` launch.
+
+### Next up
+
+- Real-rig test: import a setlist in the TUI while REAPER runner is live → verify region map + phones update without touching transport.
+- Decide whether the REAPER GUI setlist builder (panels) should be hidden now that TUI owns playlists.
+
+---
+
+## 2026-08-07: REAPER GUI trimmed to a launch/status console — TUI owns playlists
+
+### Summary
+
+Applied the "always follow the TUI set" decision to the UI itself: the in-REAPER
+setlist builder is retired from the window. `gui/app.lua` is now a compact
+launch/status console — it boots the Runner against the TUI-pushed live set and
+shows follow + network status. Also fixed a TUI startup TDZ crash.
+
+### 1. GUI retirement
+
+- `gui/app.lua` rewritten (~945 → ~380 lines). Removed from the window:
+  - Toolbar (Add Song / Remove Song / Refresh Library)
+  - Library panel, Setlist panel (Save/Load/BUILD SHOW), Details panel
+  - Add/Remove song dialogs and their `SongManager`/`SetlistModel` flows
+  - `gui/library_panel.lua`, `gui/setlist_panel.lua`, `gui/details_panel.lua`,
+    `gui/add_song_dialog.lua`, `gui/remove_song_dialog.lua` still exist on
+    disk but are **no longer required/rendered** (leaving the files in place
+    avoids breaking anything that might still reference them).
+- Kept & restyled: `▶ LAUNCH PERFORMANCE` (green, packed `Util.rgba` colors),
+  a live "FOLLOWING: <name> (N songs)" readout, a `Restart` button, a
+  pre-launch preview of the pushed TUI set (`data/setlists/_last_session.json`),
+  and the Network/Troubleshooting section (updated guidance now points to the
+  TUI for playlist management).
+
+### 2. TUI startup crash (blocking, fixed)
+
+`node scripts/tui.js` crashed with `ReferenceError: Cannot access
+'CHORD_COLOR_OPTIONS' before initialization` because `TELEPROMPTER_FIELDS`
+referenced two option consts (`CHORD_COLOR_OPTIONS`, `COUNT_IN_OPTIONS`) that
+were declared after it. Moved both declarations above `TELEPROMPTER_FIELDS`
+(`scripts/tui.js`). Verified: boots past module load to the terminal guard.
+
+### 3. Resulting workflow (single path)
+
+1. **TUI** = build/load/edit the playlist (band set). Auto-pushes to `:3000`.
+2. **REAPER** `main.lua` → **LAUNCH PERFORMANCE** → Runner follows the live set.
+3. The window's job is now only: launch, follow, and status.
+
+### Verification
+
+- `luac -p gui/app.lua` pass; no remaining references to the retired panels
+  from `gui/app.lua` or `main.lua`.
+- `node --check scripts/tui.js` pass; consts ordered
+  `CHORD_COLOR_OPTIONS(165) → COUNT_IN_OPTIONS(170) → TELEPROMPTER_FIELDS(175)`.
+
+### 4. Pull from the TUI works (`POST /api/local/setlist/pull-tui`)
+
+`pullTuiQueue()` initially failed — the raw-node `http.request({hostname: "localhost", port: 3300})`
+got a `408`/empty body from the singer server (DNS/IPv6 fallback flake), so
+`pull-tui` returned `{ok:false,"reason":"empty body"}` and the live set stayed
+stale (`Gravity / 867-5309 Jenny`).
+
+Fix: replaced with global `fetch("http://127.0.0.1:3300/api/band-queue")` +
+`AbortController` (8s). Verified:
+
+- `POST localhost:3000/api/local/setlist/pull-tui` → `{"ok":true,"count":4}`
+- live set now equals TUI band board exactly:
+  `["Don't Let Me Down", "(Sittin on) The dock of the bay", "After Midnight", "A Boy Named Sue"]`
+
+Also confirmed earlier: `e` republishes the TUI set, and the TUI pushes on
+boot (`scheduleLiveSetSync()` in `init()`), so REAPER's `pullTuiSet()` at open
++ launch is the third safety net.
+
+### 5. Transport authority: REAPER wins, local sim can't mask it (4 issues)
+
+Four related reports from an actual show rehearsal:
+
+1. **Shift+S quit Safari** — `scripts/show-optimize start` had
+   `osascript 'tell application "Safari" to quit'`. Quitting makes macOS
+   *relaunch* Safari (session restore), which is what grabbed focus. Removed
+   the Safari line entirely.
+
+2. **Song started but TUI didn't reflect playing until space↔space** —
+   The TUI's transport keys hit `/api/local/{play,pause,stop}`, which always
+   drove the **local simulated clock** (`localPlay()`, 33ms tick advancing
+   position + forcing `state.playing=true`). That sim raced the runner's
+   bridge data every poll → the TUI froze/wobbled depending on which won.
+   Fixed: `/api/local/{play,pause,stop}` now route through `reaperAction()`
+   (OSC `40044/40046/40045`) whenever REAPER is connected/active, so Space in
+   the TUI actually rides REAPER's transport.
+
+3. **Brief "REAPER PAUSED" flicker mid-song** — same race: local tick set
+   `playing=true` every 33ms, `pollLuaState` set `false` every 500ms. Now:
+   `startLocalTick()` bails if REAPER is active, and `pollLuaState()` does
+   `stopLocalTick()` + syncs `paused` when the runner is live.
+
+4. **"Not progressing / shows playing when true?"** — the bridge is now the
+   only writer of `state.playing/paused/position` while REAPER is connected.
+   Yes, the REAPER timeline must actually be rolling for play to show;
+   verified live: `POST /api/local/play` → bridge flipped `playing:true,
+   position:13.29→` and API mirrored it exactly (mirror test 4×1s, no drift).
+
+### 6. "Playing" now means the playhead is actually moving (stall-guard)
+
+Live diagnosis showed REAPER's transport was in "play" (GetPlayStateEx bit 1)
+with the playhead **frozen at 13.2934s** for minutes — so the UI said PLAYING
+while nothing rolled. Root cause is REAPER-side (transport engaged, cursor not
+advancing), but the display must not claim PLAYING in that state.
+
+Added a stall-guard to `Runner._loop` (runner.lua): `playing` is only true when
+the play bit is set AND the position has advanced within the last 1.5s. If the
+playhead sits still for >1.5s while transport claims play, we report paused.
+Resets the moment the cursor moves or transport leaves the play bit.
+
+REQUIRES re-running `main.lua` in REAPER to load (runner lives inside REAPER;
+the server + TUI picks it up automatically afterwards).
+
+Also verified for the "did you edit the right file?" concern:
+- Bridge PID 19257 started 22:02:10 AFTER server.js edit (22:01:48), cwd =
+  `.../Live Show Manager/web` — it IS running the edited server.js.
+- Only one real server.js on disk (other match is node_modules engine.io).
+- `scripts/show-optimize` is executed fresh from disk on every Shift+S by the
+  running TUI (no TUI restart needed) — Safari quit line is gone.
+
+### 7. Auto-start transport on LAUNCH PERFORMANCE
+
+`Runner.start()` now calls `Runner._ensureTransport()`: if REAPER's transport
+is stopped/paused when the show launches, it issues `Main_OnCommand(40044)`
+(Transport: Play/pause) so the needle starts moving immediately. Guarded — it
+never toggles if already playing. `Runner:` .lua reload required in REAPER.
+
+### 8. Show control plane: ARM / PLAY / STOP (+ count-in click sync)
+
+Locked model (live show):
+- **ARM** (START SHOW, Shift+S) gates everything; PLAY is a no-op until armed.
+- **PLAY** (MIDI/OSC/phone) only starts the next song; ignored while a song is
+  playing. First PLAY starts top of song 1. Counts in (seeks back one bar),
+  starts transport so the REAPER click + teleprompter flash both begin on flash-1.
+- **STOP** halts transport and stages the next song (cursor to its start + BPM),
+  armed, not playing. Next PLAY starts it.
+- Lyric-end = keep clicking (jam); no sound automations; teleprompter auto-advances.
+
+Files:
+- `runner/runner.lua` — polls `data/control_command.json`; `_cmdPlay`/`_cmdStop`/
+  `_stageFirst`/`_stageNext` seek, set BPM, start/stop transport; publishes
+  `armed`, `stagedIndex`, `countIn{active,rollStart,beats,bpm}`.
+- `runner/bridge.lua` — publishes the new control fields.
+- `web/server.js` — `/api/control/{arm,play,stop}` write the command file (fall
+  back to local sim when REAPER off); `/api/local/*` + socket play/stop route
+  through the control plane; merges `armed/countIn/stagedIndex` into state.
+- `scripts/tui.js` — Shift+S arms/disarms :3000 (`lsmPost('/api/control/arm')`).
+- `web/public/click.html` — WebAudio click page, beat-locked to transport
+  position (same math as HUD), output = Mac default device. Testable now;
+  Force/MIDI output slot via config at the rig.
+- `teleprompter.html` — count-in flashes now anchor to the transport's
+  `countIn.rollStart` (position-driven) instead of a wall-clock timer, so they
+  lock to the click.
+
+Click device investigation: show-time REAPER audio = M-Audio M-Track Plus
+IN/OUT (guitar bus). Mac LAN 192.168.0.202. Force is part of rig (not connected
+now). No Link library yet; the `tempo.source==='link'` model already exists.
+Recommended end-state: Force click on out 3/4 via Ableton Link; REAPER joins
+the Link session. Buildable now as a swappable output on the click scheduler.
+
+### 9. STOP stages the next song into the singer queue (teleprompter)
+
+When the control-plane STOP stages the next song (runner publishes
+`stagedIndex` + `songId`), the bridge now mirrors it into the :3300 singer
+queue so the teleprompter loads the next song's lyrics immediately (status
+`loaded`, not playing).
+
+- `server/api/queue.js` — new `POST /api/queue/load-song` (slug or title);
+  resolves slugified folder names (e.g. `don_t_let_me_down` → `Don't Let Me
+  Down`), sets current_song + status `loaded`, triggers lyric load.
+- `web/server.js` — `syncStagedToSinger()` POSTs the staged song to :3300 with
+  the singer config's sha256 auth token; fires from `pollLuaState` when
+  staged && !playing && not-yet-synced; resets on each new song start.
+
+Verified live: `load-song` with the slugified id resolves the real song, sets
+status `loaded`, and `/api/queue/current` reflects it for the teleprompter.
+
+### 10. Jam + count-in fixes (from live review)
+
+- **Count-in pre-roll now fits the visual count-in.** The teleprompter's
+  count-in is 2 attention flashes + a count-down bar (`FLASHES + countBeats`),
+  but the runner rolled back only one bar. Now rolls back `2 + countBeats`
+  beats, so flash-1 = transport start = first click, and the last count-down
+  beat lands exactly on the song start. Count-in expiry also uses the full
+  `2 + countBeats` window.
+- **NOW PLAYING holds through the jam.** When the cursor passes the song's
+  region end while playing, the runner keeps the last song + BPM (instead of
+  blanking `currentSong`), so the label and click stay on the song until STOP.
+  The teleprompter still auto-advances at the boundary (per the earlier choice).
+
+### 11. Click beat anchoring (song-downbeat grid)
+
+The click accent was `floor(position*bpm/60) % 4 == 1` — musically meaningless
+(beat 0 = start of REAPER timeline, not the song). Fixed by anchoring beats to
+the song's downbeat:
+
+- Runner publishes `beatAnchorSec` (the current/staged song's region start in
+  seconds) — set in `_loop` (region lookup), `_cmdPlay`, `_stageFirst`,
+  `_stageNext`; carried through bridge + `/api/state`.
+- click.html computes `relBeats = (position - beatAnchorSec) * bpm / 60` and
+  accents beat 1 of each bar (`floor(relBeats) % beatsPerBar == 0`), falling
+  back to absolute beats when no anchor is present. Bar/beat display uses the
+  same model.
+- Verified: accent lands on count-in beat 1 (one bar before the downbeat) and
+  on every song bar's beat 1; the downbeat lands exactly at the song start.
+
+Robust: uses current BPM consistently, independent of how the tempo got set;
+negative relBeats during the pre-roll handled by the modulo.
+
+### 12. Crash fix: reaper.ProjectIndex is not a REAPER API
+
+`_cmdPlay` passed `reaper.ProjectIndex(0)` as an argument (evaluated before
+`pcall`), so the nil call crashed REAPER when PLAY was pressed for song 1.
+
+`ProjectIndex` does not exist in REAPER's Lua API — the correct call is
+`reaper.EnumProjects(0, 0)`. It was used (silently no-op'ing due to guards) in
+`_seekTo`, `_setSongBpm`, and bridge.lua's `readTransport`, meaning song BPM was
+never actually pushed into REAPER's project tempo and real project tempo reads
+fell back to meta BPM. Added `Runner._currentProject()` (pcall-guarded
+`EnumProjects(0,0)`) and replaced all call sites. Verify by re-running
+`main.lua` and pressing PLAY.
+
+### 13. Launch = disarmed + transport parked (and ignore stale commands)
+
+Reported: show launched "disarmed but playing", so the song started as soon as
+ARM was pressed.
+
+Root cause (two parts):
+1. `Runner.start()` never stopped a transport that was already rolling from a
+   previous session, and didn't reset `armed`.
+2. A stale `data/control_command.json` (a leftover `play` from an earlier live
+   test) sat on disk; when the runner reloaded, `_controlCheck` consumed it and
+   fired PLAY immediately.
+
+Fixes:
+- `Runner.start()` forces `armed=false`, `stagedIndex=0`, `countIn=nil`, sets
+  `beatAnchorSec` to region 1, and calls `_haltTransport()` (Transport: Stop).
+- New `Runner._haltTransport()` — pcall-guarded stop, only if actually playing.
+- `_stageFirst`/`_stageNext` also park the transport (staging always = parked).
+- `start()` deletes any pre-existing control_command.json so a fresh launch
+  never inherits stale arm/play/stop commands.
+- Cleared the leftover `play` file on disk.
+
+### 14. Song duration from chopro; skip/prev buttons; START label
+
+1. **Lyrics vs song-length mismatch** — "Don't Let Me Down" played as a 75s
+   region (meta.duration_bars=25) but its chopro `@bar`/`@time` annotations ran
+   to bar 56 / 165.8s, so lyrics scrolled ~2.2x too fast and ran out while the
+   countdown/sections said lots remained. Fix: `Library.scan()` now reads the
+   song.chopro and raises `duration_bars` to the max of meta and the chopro's
+   max `@bar` (or last `@time`→bar). Regions now match the timed lyrics.
+   Requires main.lua re-run.
+
+2. **Phone START button** sub-label was "Next song" (misleading — PLAY is
+   ignored mid-song). Changed to "Play loaded song".
+
+3. **Skip/Previous buttons** added to the phone controller (SKIP/PREV), wired to
+   the `next`/`prev` socket actions, which now write a `stage {dir}` command to
+   the runner (halts transport + stages adjacent song) instead of raw OSC jump.
+   Also `/api/control/next` and `/api/control/prev` HTTP endpoints for MIDI/OSC
+   mapping; runner supports `stage {dir}` and `stage {index}`.
+
+4. `parseChoproDirectiveSections` now recognizes `## Section` headers (UG
+   export style), so full-song sections are built instead of the sparse
+   meta-only list.
+
+### 15. Timing system deep-dive + corrected parser (LRCLIB ground truth)
+
+Investigated the lyric-timing pipeline across all 290 songs. Root cause of the
+"lyrics ran out early" report and general timing drift:
+
+- Timing ORIGINATES from LRCLIB (real synced lyric seconds) → imported via
+  `web/tools/lrc-to-bars.js` → `@bar=N` → then `migrate-to-atime.js` converted
+  `@bar`→`@time` using `meta.bpm`.
+- The `@bar`→`@time` conversion is lossless IF `meta.bpm` is correct. But
+  `meta.bpm` (aubio auto-detect) is wrong for ~1/3 of songs, STRETCHING the
+  timestamps (e.g. American Pie 522s real → 4092s). The trailing `@N.NN` UG
+  noise was also being trusted in some parsers.
+- Net: ~190 songs fine, ~98 wrong-BPM/estimated, ~2 no timing.
+
+Fixes:
+- **`web/public/timing.js`** (shared parser, used by server + available to HUD):
+  trusts `@time` (LRC ground truth), ignores the trailing `@N.NN`, converts
+  `@bar` at meta BPM, caps implausible times (600s / 300 bars), and returns an
+  `estimated` flag.
+- **`web/server.js`** `extractLyricLines()` now delegates to `Timing.analyze` in
+  BOTH the local-playback and live-REAPER section paths; sync-health gains an
+  "estimated" warning; duration uses the parser's capped maxBar.
+- **`web/public/hud.js`** `parseChordPro` now prefers `@time=` over the trailing
+  `@N.NN` (was inverted) and strips the trailing noise from display; caps `_time`
+  at 600s.
+- **`backend/library.lua`** derives `duration_bars` from the last `@time` (capped
+  +12s outro) instead of the unreliable meta value, so REAPER regions match.
+
+The definitive fix for the ~98 flagged songs is a ground-truth re-fetch:
+**`node web/tools/re-sync-timing.js`** (targeted, dry-run available) re-runs the
+LRCLIB pipeline with `--force` only on songs the audit flags.
+
+### 16. LRCLIB re-sync + outlier rejection (timing fixed to 96.6%)
+
+Ran `web/tools/re-sync-timing.js` (130 songs re-fetched from LRCLIB, 0 failures).
+Added **outlier rejection** to `timing.js`: drops @time values > 3× the median
+(removes corrupt LRCLIB fuzzy-match lines like `@time=931.53 reach`) and their
+@bar fallback. Result: library went from 223 → **280/290 good (96.6%)**.
+
+Remaining (10): 4 genuinely bad-BPM songs (GEORGIA PEACHES, HEY HEY MY MY,
+MR JONES, Papa Was a Rollin Stone — median itself inflated), 4 legitimately
+short songs, 2 with no timing. All still flagged via sync-health.
+
+Also discovered: the lyric pipeline corrupted timestamps by round-tripping
+LRCLIB seconds through `meta.bpm` (aubio wrong ~1/3 of time). Lyric timing is
+now decoupled from BPM (`@time` trusted directly). BPM still matters for the
+click + regions → see `docs/BPM_VALIDATION_PLAN.md` (pass / go-deeper design,
+PLANNED not built).
+
+### 17. BPM verification + click safety gates (stems/tracks protection)
+
+**Problem**: aubio BPM is unreliable on rock (locks onto half/double tempo), and
+the lyric pipeline round-tripped timestamps through meta.bpm, stretching them.
+
+**BPM resolution** (`web/tools/verify-bpm.js`):
+- LRCLIB-derived BPM (raw synced-lyrics seconds matched to chopro bars) is the
+  ground truth — non-circular, no audio/aubio needed. Writes meta.json with
+  `bpm_source="verified"`, `bpm_verified=true`, `lrc_duration_sec`.
+- 199/290 songs verified this way (incl. previously-broken American Pie, Hey Jude).
+
+**Tap-to-verify** (`web/tools + /tap-verify.html` + server endpoints):
+- `/api/verify/list` (pending), `/api/song-audio/:id` (range streaming),
+  `/api/verify/lock` (write human-confirmed BPM).
+- Keyboard-driven page: SPACE=tap, Enter=lock, N=skip, P=prev, R=replay.
+- Auto-plays each unverified song, locks on 4 consistent taps, auto-advances.
+
+**Runner safety gates** (show-critical — the stems/tracks concern):
+- `_setSongBpm` only fires when `bpm_verified=true` (never guesses into REAPER).
+- `_hasTempoSyncedItems()` — if ANY track item's play-rate is tied to project
+  tempo, `_setSongBpm` skips entirely (changing BPM would stretch stems/tracks).
+- Count-in/click only runs when BPM is verified; unverified songs start the
+  transport but WITHOUT click/count-in (never a wrong-tempo click live).
+
+**State**: 199 verified + 90 pending tap-verify + 4 gpif. Run `/tap-verify.html`
+to lock the remaining 90 manually.
+
+### 18. Tap-to-verify meter (3/4 vs 4/4) + runner time-signature support
+
+Real-world tap findings:
+- **3/4 waltzes tapped at 2× the beat tempo.** The user tapped the triplet
+  subdivision (1-2-3 as eighth-triplets) instead of the beat, so Cover Me Up
+  stored 130.7 vs aubio 65.05 (=2.01×), and all six waltzes matched ~2×. In 3/4,
+  "123 123" on the BEAT = the real tempo; tapping subdivisions doubles it.
+
+Fixes:
+- **Tap tool** now captures meter: press `3` (3/4) or `4` (4/4) before locking;
+  `/api/verify/lock` stores `meta.time_sig`. `/api/verify/list` returns the
+  current time_sig so the tool presets it.
+- **Re-tap required**: the six waltzes must be re-tapped ON THE BEAT with meter 3.
+- **Runner**: `_setSongTimeSig` sets REAPER's project time signature from the
+  song's verified meter (TimeMap_SetTimeSig 3/4 or 4/4), so the count-in + click
+  accent beat 1 of the correct bar. Bridge falls back to the song's time_sig.
+  Changing time signature does NOT stretch audio (grid only).
+
+Flagged songs to fix:
+- GEORGIA PEACHES: wrong audio (different version; needs correct Cody Johnson).
+- Untitled: Pink Floyd "Money" mislabeled + 82s clip (needs full re-import).
+- You Can Have the Crown: re-sync official audio/lyrics.
+- CADILLAC RANCH + Folsom Prison: intros to handle/note.
+- Whiskey and Rain: lock BPM ~101 (aubio-confirmed).
+
+### 19. 3/4 waltz conversion (taps were on the beat)
+
+User confirmed the waltz taps were each hit = one beat (1-2-3-1-2-3), so the
+stored BPMs are correct — no re-tap needed. Converted all 7 waltzes:
+Cover Me Up, Songs About Rain, Hard to Be Humble, Cadillac Ranch,
+I Can Lie the Truth Is, both Take-an-Angel versions → `meta.time_sig=[3,4]`
+(kept tapped BPMs). Runner `_setSongTimeSig` now sets REAPER's project time
+signature + the click accents beat 1 of 3. If the click feels 2x fast at the
+rig, halve those 7 (one flag).
+
+Also: removed the risky `clean-atime-outliers.js` tool — it modified source
+chopro files and was unnecessary (the parser handles messy files at display
+time). Current display state: 284/290 songs monotonic+plausible (97.9%).
+
+### 20. Waltz conversion + problem-song cleanup
+
+- **7 waltzes → 3/4** (user confirmed taps were on the beat): Cover Me Up,
+  Songs About Rain, Hard to Be Humble, Cadillac Ranch, I Can Lie the Truth Is,
+  both Take-an-Angel versions. `meta.time_sig=[3,4]`, BPMs kept. Runner sets
+  REAPER time sig + click accents beat 1 of 3.
+- **Removed corrupt GEORGIA PEACHES** entry — it was a *different song* (a
+  moonshine-runnin' track, not Lauren Alaina's "Georgia Peaches"); wrong audio
+  + wrong lyrics.
+- **Fixed Untitled → Pink Floyd "Money"**: renamed folder, corrected meta,
+  re-downloaded the official full audio (382s, 2023 Remaster vs the 82s clip),
+  re-synced LRCLIB lyrics (17.7→377s). Money is in **7/8** — flagged for
+  manual meter handling (aubio/tap unreliable in odd meter).
+- Removed risky clean-atime-outliers.js tool. Display timing: 284/290 (97.9%).
+
+### 21. Money (7/8) accent + Cadillac Ranch intro trim
+
+- **Money (Pink Floyd)**: `time_sig=[7,8]`, BPM kept (64, tune at rig). The
+  accent system now supports ANY meter — `_setSongTimeSig(beatsPerBar,
+  beatsPerBeat)` uses the song's denominator (4 or 8), and the click accents
+  beat 1 of N (3/4, 4/4, 7/8 all work through the same machinery). Re-downloaded
+  official full audio (382s) + re-synced LRCLIB lyrics (17.7→377s).
+- **CADILLAC RANCH**: music-video intro was the first ~45s (quiet, -35dB, no
+  lyrics). Trimmed audio (224.9→179.9s, backup at full.mp3.orig), shifted all
+  lyric @time by −45s, stripped @time from the 11 intro lines that went
+  negative. Final: est=false, monotonic, last lyric 104s vs 179.9s audio.
+- **GEORGIA PEACHES**: removed corrupt entry (was a different song entirely).
+
+# ═══════════════════════════════════════════════════════════════════
+# SESSION DEEP-DIVE — 2026-08-08: Timing system rebuilt end-to-end
+# ═══════════════════════════════════════════════════════════════════
+# This is the resume point. Read this first after clearing context.
+# ═══════════════════════════════════════════════════════════════════
+
+## 1. The original problem (user-visible)
+
+- "Teleprompter got through ALL lyrics then the song still had many sections."
+- Click tempo and lyric scroll drifted from the real recording.
+
+## 2. Root cause (the whole chain)
+
+- Lyrics originated from **LRCLIB** (real synced lyric seconds) → imported via
+  `web/tools/lrc-to-bars.js` → `@bar=N` → then `migrate-to-atime.js` converted
+  `@bar`→`@time=N` using `meta.bpm`.
+- That conversion is lossless ONLY when `meta.bpm` is correct. But `meta.bpm`
+  comes from **aubio auto-detection, which is wrong ~1/3 of the time**. When
+  wrong, it STRETCHED all the LRCLIB timestamps (American Pie: real 522s →
+  4092s).
+- The library has TWO annotation dialects that the parser confused:
+  - **bar-derived `@time`** (91%): `@time` = (bar-1)*240/bpm, redundant with @bar.
+  - **true-seconds `@time`** (Eagles style): `@time` IS the real second.
+  - Plus the **trailing `@N.NN`** (UG noise) that some parsers trusted wrongly.
+- `meta.duration_bars` was ALSO unreliable (Hey Jude said 25 bars = 79s; real
+  431s), so REAPER regions were far too short.
+
+## 3. What we built (the fixes)
+
+### A. Shared timing parser — `web/public/timing.js`
+- `Timing.analyze(choproText, metaBpm)` → `{lines, bpm, maxBar, estimated}`.
+- Trusts `@time` (LRC ground truth), ignores trailing `@N.NN`, converts `@bar`
+  at meta BPM, caps implausible times (600s / 300 bars), outlier-rejects corrupt
+  values (>3x median), returns an `estimated` confidence flag.
+- Used by server.js (`extractLyricLines`), and the same logic now in hud.js
+  (which had its OWN inverted bug — preferred trailing over @time).
+
+### B. LRCLIB re-sync — `web/tools/re-sync-timing.js`
+- Re-fetched LRCLIB synced lyrics for flagged songs with `--force`, writing
+  REAL seconds as `@time`. 130 songs processed, 0 failures.
+
+### C. BPM verification — `web/tools/verify-bpm.js`
+- Derived BPM from LRCLIB synced-lyrics seconds matched to chopro bars
+  (non-circular, no audio/aubio needed). 199 songs verified this way.
+- Wrote `meta.json`: `bpm_source="verified"`, `bpm_verified=true`,
+  `lrc_duration_sec`.
+
+### D. Tap-to-verify — `/tap-verify.html` + server endpoints
+- `GET /api/verify/list` (pending), `GET /api/song-audio/:id` (range-streams
+  `~/Music/SongAudio/<song>/full.mp3`), `POST /api/verify/lock` (writes BPM +
+  time_sig to meta.json).
+- Keyboard-driven: SPACE=tap, Enter=lock, N=skip, P=prev, R=replay, **3=3/4,
+  4=4/4** (meter), `?song=<id>` to re-tap a specific song.
+- Tap logic: median of recent intervals, reject outliers (>50%), lock only when
+  last 4 taps are within 4% (strict, no drift).
+
+### E. Runner safety gates — `runner/runner.lua`
+- `_setSongBpm` ONLY fires when `bpm_verified=true` (never guesses into REAPER).
+- `_hasTempoSyncedItems()` — if ANY track item's play-rate is tied to project
+  tempo, BPM changes are SKIPPED (stems/tracks can never be stretched live).
+- `_setSongTimeSig(beatsPerBar, beatsPerBeat)` — sets REAPER project time sig
+  from the song's meter (3/4, 4/4, 7/8 all work). The click accents beat 1 of N.
+- Count-in/click only runs for verified BPMs; unverified songs start transport
+  with NO click (never a wrong-tempo click).
+
+### F. Fixes to `reaper.ProjectIndex` (was a non-existent REAPER API)
+- Replaced with `reaper.EnumProjects(0,0)` via `Runner._currentProject()`. This
+  was silently no-op'ing `_setSongBpm`, `_seekTo`, and bridge `readTransport`.
+
+## 4. The data problems found & fixed
+
+| Song | Problem | Fix |
+|------|---------|-----|
+| 7 waltzes | tapped 2x (subdivision vs beat) — CONFIRMED on-the-beat | time_sig=[3,4], BPMs kept |
+| Money (was "Untitled") | 82s clip + mislabeled | renamed, full 382s audio, 7/8 meter, re-synced lyrics |
+| GEORGIA PEACHES | wrong song entirely (moonshine track) | removed |
+| CADILLAC RANCH | ~45s music-video intro | trimmed audio + shifted @time −45s |
+| You Can Have the Crown | corrupt tail @time (1373s on 360s audio) | outlier-rejected; timing now 157s |
+| Whiskey and Rain | untapped | locked 101 (aubio-confirmed) |
+
+## 5. MISTAKES MADE (learn from these)
+
+1. **`clean-atime-outliers.js` modified SOURCE chopro files.** The parser already
+   handles messy files at display time; touching the source was wrong and caused
+   a scary-looking regression (54% audit). Restored from `.lrc-bak` backups;
+   display timing verified intact (97.9%). Lesson: NEVER bulk-edit source song
+   files; the parser is the boundary.
+2. **The "2x tempo" panic.** Initially concluded the waltzes were tapped 2x and
+   planned to halve them. User clarified each tap = ONE beat (1-2-3-1-2-3 on
+   beats). BPMs were correct; only the METER was missing. Lesson: confirm the
+   human's counting pattern before "correcting" data.
+3. **Audit metric inconsistency.** Kept switching between "good = plausible
+   last-time" vs "estimated flag" — caused false alarm. Lesson: define ONE
+   show-readiness metric (monotonic + plausible last time) and stick to it.
+4. **aubio is unreliable for rock/odd meters** (locks onto half/double tempo,
+   unstable across params). Never trust it alone for BPM.
+
+## 6. KEY ARCHITECTURE INSIGHTS
+
+- **Lyric timing must be DECOUPLED from BPM.** `@time` (LRC seconds) is ground
+  truth; BPM is only for click + regions. Don't derive one from the other.
+- **LRCLIB is the authoritative timing source** (real synced seconds + duration).
+  The audio (`~/Music/SongAudio/<song>/full.mp3`) is the BPM tiebreaker + fallback.
+- **The accent system is unified**: beatsPerBar from time_sig[0], accent on beat
+  1. 3/4, 4/4, 7/8 all flow through the same machinery.
+- **Meta fields now**: `bpm`, `bpm_source` (verified/gpif/aubio/manual),
+  `bpm_verified`, `time_sig`, `lrc_duration_sec`.
+
+## 7. FINAL STATE (show-readiness audit)
+
+- **Lyric timing: 283/289 (97.9%)** monotonic + plausible.
+  - 200 clean, 83 `estimated` flag (confidence marker, scrolls correctly).
+  - 6 edge cases: BEER AND BONES (24s), Cold as Ice (5s), HORSEPOWER (29s),
+    Hey hey my my (0s, no timing), Little Wing, Pride and Joy (no timing).
+- **Meters**: 279× 4/4, 7× 3/4 (waltzes), 1× 7/8 (Money).
+- **All BPMs verified** except flagged edge cases.
+
+## 8. TO ACTIVATE / VERIFY AT THE RIG
+
+1. Re-run `main.lua` in REAPER (loads runner time-sig + BPM gates).
+2. Test the waltz clicks — if any sounds 2x too fast, halve that song's BPM
+   (one flag). Money's 7/8 BPM needs human tuning.
+3. You Can Have the Crown: re-download official audio at the rig.
+4. Folsom Prison: "Hello, I'm Johnny Cash" intro — won't use stems, informational.
+
+## 9. FILES TOUCHED
+
+- `web/public/timing.js` (NEW, shared parser)
+- `web/public/tap-verify.html` (NEW, keyboard tap tool)
+- `web/public/click.html` (accent uses timeSig)
+- `web/public/hud.js` (prefer @time over trailing)
+- `web/server.js` (verify endpoints, Timing integration, control plane)
+- `web/tools/re-sync-timing.js` (NEW), `web/tools/verify-bpm.js` (NEW)
+- `web/tools/lrc-to-bars.js`, `web/tools/migrate-to-atime.js` (data pipeline)
+- `runner/runner.lua` (BPM/time-sig gates, EnumProjects fix)
+- `runner/bridge.lua` (time_sig fallback)
+- `backend/library.lua`, `models/song.lua` (bpm_verified, time_sig)
+- `docs/BPM_VALIDATION_PLAN.md` (design doc)
+
+## 10. NEXT STEPS (after clearing context)
+
+1. Rig test: full run, check waltz click tempos, Money 7/8, Crown audio.
+2. Re-run `node web/tools/re-sync-timing.js` if new songs are added.
+3. Re-run `node web/tools/verify-bpm.js` after any library change.
+4. Re-run the audit (see `web/public/timing.js` usage in this log) after data
+   changes to confirm 97.9%+.
+5. Consider the "estimated" songs (83) — optionally re-fetch from LRCLIB or
+   manually verify the ones in the live setlist.
+
+### 22. Fix: CountTrackItems → CountTrackMediaItems (crash)
+
+`_hasTempoSyncedItems()` called `reaper.CountTrackItems` which doesn't exist
+(correct API: `reaper.CountTrackMediaItems`). Crashed the runner at line 793 on
+full run. Fixed. Audited ALL reaper.* calls in runner.lua — every other API
+name is valid (`ProjectIndex` only appears in a comment).
+
+### 23. Authoritative region duration + debug visibility layer
+
+**System fix (new songs just work):** Region length is now authoritative:
+  1. `meta.lrc_duration_sec` (real LRCLIB track length) — 282/289 songs have it
+  2. fallback: last CLEAN chopro @time + 12s (outlier-rejected like timing.js)
+  3. fallback: meta.duration_bars
+  Verified: **all 289 regions now match real duration (0 mismatches)**. This
+  fixes "Dock of the Bay finished way early" (region was 600s from corrupt
+  @time=1055; now 167s = real).
+
+**Debug visibility (no more "day to nail down"):**
+- `GET /api/debug/snapshot` — one call revealing: bridge state, singer queue,
+  current song meta + chopro health (monotonic, estimated, last time), region
+  vs audio vs lyrics integrity %, AND auto-generated consistency checks
+  (bridge-song vs singer-song mismatch, region too long, non-monotonic lyrics).
+- `GET /debug.html` — human dashboard rendering BRIDGE | SINGER | HUD LYRIC
+  WINDOW | INTEGRITY | CHECKS, auto-refresh 2s. Open http://<host>:3000/debug.html
+  during a run to see exactly what each system sees.
+
+Right now it surfaces the live desync (bridge playing Dock of the Bay at stale
+600s region while singer queue shows Don't Let Me Down). After re-running
+`main.lua` (rebuilds regions with the 167s duration), re-check `/debug.html` —
+the mismatch should clear.
+
+Also fixed a server crash in the debug endpoint (meta scope) that took the
+bridge down briefly.
+# SESSION HANDOFF — 2026-08-08 final state
+# Read this first when resuming.
+
+## Live Symptoms (what you see on screen right now)
+
+1. **Teleprompter stuck on Dock of the Bay, "wastin' time"** — last lyric line,
+   not advancing. Bridge confirms: position 1699s, current song Dock of the Bay,
+   lyrics end at 133s. Transport is rolling but past all regions (set end 764s).
+2. **TUI shows bar 369** — position 1699s × 52bpm/240 + 1 = 369. This is
+   the beat grid continuing past the set end into dead space.
+3. **TUI "next" does nothing** — the singer queue (main_queue) is on a
+   DIFFERENT rotation [Dock, 867-5309, Satisfaction, ACHY BREAKY HEART] that
+   has nothing to do with the band set. Advancing it goes to a different song.
+4. **TUI rendering glitches** — bottom row height changing, color bars broken,
+   countdown/timer broken. This is likely the TUI driving off the bridge's
+   inconsistent state (position past set end, songIndex 0, stagedIndex 1).
+5. **Singer server and bridge disagree on current song**:
+   Bridge shows Dock of the Bay, singer queue shows ACHY BREAKY HEART.
+
+## Root Cause Chain
+
+The transport ran past the end of the set (all 4 regions end at 764s) and kept
+rolling. Position is now 1699s — twice the set length. When the runner's follow
+check (`_applySessionData`) runs, it sees position past the end, sets
+`songIndex = 0` (no region found) and blanks `currentSong`. But the bridge's
+server state caches the last `currentSong` (Dock of the Bay) because
+`pollLuaState` only updates it inside the `connected` branch, and the runner
+publishes `currentSong = null` which the server's `||` logic doesn't overwrite
+(started with the cached title).
+
+The teleprompter reads `/api/queue/current` from the singer server (a separate
+rotation), not the bridge's current song. So it shows ACHY BREAKY HEART while
+the HUD/bridge think Dock of the Bay.
+
+## State Right Now (debug snapshot of live system)
+
+```
+Bridge:  Dock of the Bay | pos=1699s | dur=165s | playing=true | idx=0/4 | bpm=52
+Singer:  ACHY BREAKY HEART | status=loaded | idx=3
+Regions: DLMD(0-215) Dock(215-380) AfterMid(380-573) ABNS(573-764) — total 764s
+Song health: lyrics end 133s, audio 167s, region 165s (99% match — FIXED)
+Checks:   ERROR: singer vs bridge song mismatch
+          WARN: estimated timing (file has corrupt @time values)
+```
+
+## What's Already Working (from yesterday — do NOT re-do these)
+
+- **Region durations** are now correct (lrc_duration_sec authoritative, 289/289 match).
+- **BPMs** are verified (199 LRCLIB-derived, 4 gpif, rest manual-tap or aubio).
+- **Timing parser** (`timing.js`) handles all chopro dialects correctly (97.9% good).
+- **Runner safety gates** (`_setSongBpm` only fires when verified, never stretches stems).
+- **Time-sig flow** works (3/4, 4/4, 7/8 all accent correctly via `_setSongTimeSig`).
+- **Tap-to-verify** works (keyboard-driven, meter capture, `?song=` re-tap).
+- **Debug tools:**
+  - `/api/debug/snapshot` — one call reveals bridge + singer + song health + checks
+  - `/debug.html` — auto-refresh dashboard (open at rig, I query same data)
+
+## What Needs Investigation (fresh eyes)
+
+1. **Transport runs past set end** — should auto-stop or at least not drift to
+   2× the set length. Runner's `_loop` has no end-of-set transport stop.
+   When position > last region end, the runner blanks songIndex/currentSong,
+   which cascades into the bridge caching stale state. Fix: either auto-stop
+   the transport at set-end, or hold the last song cleanly.
+
+2. **Teleprompter reads singer rotation, not the live set** — this is by
+   design (singer queue is the teleprompter source), but the singer queue
+   must BE the same list as the band set for it to agree. Either sync them
+   (on ARM, populate singer queue from band set), or make the teleprompter
+   follow the bridge's current song.
+
+3. **songIndex=0 bug** — the bridge shows `songIndex:0` with `currentSong:
+   "Dock of the Bay"`. Index 0 should be Don't Let Me Down. Something is
+   resetting songIndex while currentSong lingers. Root: `_applySessionData`
+   sets songIndex=0 when position is past the end; server keeps stale
+   currentSong because `||` logic doesn't nil out.
+
+4. **TUI rendering glitch** — likely caused by the bridge's broken state
+   (position past end, songIndex 0, stagedIndex 1) feeding into the TUI's
+   render logic. Fix the bridge state and the TUI will likely stabilize.
+
+5. **"next" in TUI no-op** — the TUI's `doAction('next')` advances the
+   singer queue (`main_queue`), not the band set. This is working as
+   intended for the singer rotation, but doesn't match the live-show
+   expectations.
+
+## Files With Uncommitted Changes (everything from this session)
+
+All Lua and JS files in the repo are modified vs HEAD. The key files touched:
+- `runner/runner.lua` — runner.lua modified (EnumProjects fix, duration fix, time_sig, safety gates, _loop changes from today)
+- `backend/library.lua` — region duration now authoritative (lrc_duration_sec)
+- `models/song.lua` — bpm_verified, time_sig fields
+- `runner/bridge.lua` — time_sig fallback, EnumProjects fix
+- `web/server.js` — control plane, debug endpoints, Timing integration, verify endpoints
+- `web/public/timing.js` (NEW) — shared parser
+- `web/public/tap-verify.html` (NEW) — keyboard tap-to-verify
+- `web/public/debug.html` (NEW) — debug dashboard
+- `web/public/click.html` — timeSig-based accent
+- `web/public/hud.js` — prefers @time over trailing
+- `web/public/controller.js` — skip/prev buttons, START label fix
+- `web/tools/re-sync-timing.js` (NEW), `web/tools/verify-bpm.js` (NEW)
+
+The `reaper/` library metadata also changed (90+ chopro files, meta.json updates).
+
+## What to do on resume
+
+1. Start by looking at `/api/debug/snapshot` to see live state.
+2. Stop REAPER's transport (it's running in dead space at 1699s).
+3. Fix the transport-past-set-end problem (runner _loop).
+4. Resolve the singer/bridge mismatch (either sync singer queue to band set
+   on ARM, or change teleprompter source).
+5. Once the bridge state is consistent, the TUI rendering glitch should resolve.
+6. Run a full show: ARM → PLAY → (song) → STOP → (advance) → PLAY → ...
+   and watch `/debug.html` for mismatches.
+
+## 2026-08-08 (Late): Correct show flow — no auto-start between songs, count-in drives tempo
+
+### The show flow (final, agreed)
+
+1. **Song ends** → server auto-loads the NEXT song's lyrics for the teleprompter, but does NOT start it. BPM stays at the PREVIOUS song's tempo (the gap keeps the old pulse).
+2. **PLAY or NEXT pressed** → server re-resolves the LOADED song's BPM from the library, switches `state.bpm` to it, and starts a **count-in** (4→3→2→1 at the new song's BPM, position frozen during count-in).
+3. **Song begins** → position clock starts advancing, click at the new tempo, lyrics scroll, HUD count-in overlay hides.
+
+### Changes — `web/server.js`
+
+- `startLocalTick()` auto-advance: now calls `localJumpToSong(next)` then **restores the previous BPM** and does NOT call `localPlay()`. Song loads stopped. The old auto-playing (`localJumpToSong` + `localPlay`) is removed.
+- `controlPlay()` local path: re-resolves the current song's BPM from `songLibrary` (via `state.songId`) so the count-in and click run at the LOADED song's tempo even though `state.bpm` was held at the previous tempo during the gap.
+- `sectionsFromChordpro()`: rewritten to use the real `@bar=` annotations from each chopro section's raw lines (via new `cs.raw`) instead of proportional line-count distribution — fixes the "C1 = 95% of song bar" bug (C1 went 105px → 35px).
+- `parseChoproDirectiveSections()`: now preserves `raw` lines per section for `@bar` extraction.
+
+### HUD count-in (`live-stage-hud/web/public/`)
+
+- Added `#countOverlay` (fixed fullscreen, big 4→3→2→1 number) + `#countNum` to `hud.html`.
+- Added CSS (pulse animation).
+- Added a **local 50ms count-down clock** in `hud.js` driven by `lastCountIn.startedAt + BPM` — smooth/on-beat, independent of the ~10Hz socket broadcast cadence (was jerky before).
+- The socket state handler now just stores `lastCountIn = s.countIn`; the timer renders it.
+- `#syncWarning` changed from `position:fixed` (overlapped header) to in-flow, pushing content down; only shows for serious issues.
+- Connection LED gets `.connected` class (green) from JS.
+
+### Verified
+
+- PLAY → countIn `{active:true, bpm: songBpm}`, position frozen at 0, then advances after count-in completes.
+- Song-end loads next stopped, BPM preserved, then PLAY re-resolves to the loaded song's BPM (81.4 → 131.6).
+- `npm test`: 27/27 pass.

@@ -2,26 +2,20 @@
   "name": "_last_session",
   "songs": [
     {
-      "title": "Don't Let Me Down",
-      "artist": ""
-    },
-    {
-      "title": "(Sittin on) The dock of the bay",
-      "artist": ""
-    },
-    {
+      "id": "after_midnight",
+      "folder": "After Midnight",
       "title": "After Midnight",
-      "artist": ""
+      "artist": "Eric Clapton",
+      "bpm": 131.6
     },
     {
-      "title": "(I Can't Get No) Satisfaction",
-      "artist": ""
-    },
-    {
+      "id": "a_boy_named_sue",
+      "folder": "A Boy Named Sue",
       "title": "A Boy Named Sue",
-      "artist": ""
+      "artist": "Johnny Cash",
+      "bpm": 96.9
     }
   ],
-  "savedAt": "2026-08-05T19:43:27.448Z",
+  "savedAt": "2026-08-08T21:43:46.040Z",
   "autoSaved": true
 }

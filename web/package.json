@@ -5,7 +5,9 @@
   "description": "Web bridge between Live Show Manager Lua runner, iPhone control surface, stage display, and REAPER via OSC",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/transport.test.js tests/integration.test.js tests/browser.test.js",
+    "test:show-ready": "node tools/test-show-ready.js"
   },
   "dependencies": {
     "blessed": "^0.1.81",
@@ -17,5 +19,8 @@
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "socket.io": "^4.7.2"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
   }
 }

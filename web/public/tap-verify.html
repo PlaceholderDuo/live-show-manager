@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tap-to-Verify BPM</title>
+<style>
+  :root { --bg:#0b0e14; --panel:#141a24; --border:#232c3b; --text:#e6ebf2; --dim:#7a8698; --accent:#3ddc84; --warn:#f0a03a; --danger:#e05252; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Display",system-ui,sans-serif; min-height:100vh; display:flex; flex-direction:column; }
+  header { padding:14px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); }
+  .brand { font-weight:800; letter-spacing:.4px; }
+  .progress { color:var(--dim); font-variant-numeric:tabular-nums; }
+  main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px; gap:18px; }
+  .song-title { font-size:clamp(22px,4vw,34px); font-weight:800; text-align:center; }
+  .song-artist { color:var(--dim); font-size:clamp(14px,2.4vw,18px); }
+  .bpm-big { font-size:clamp(60px,14vw,130px); font-weight:900; font-variant-numeric:tabular-nums; color:var(--accent); }
+  .bpm-label { color:var(--dim); letter-spacing:2px; text-transform:uppercase; font-size:12px; }
+  .hint { color:var(--dim); text-align:center; font-size:14px; line-height:1.6; max-width:520px; }
+  .keycap { display:inline-block; background:var(--panel); border:1px solid var(--border); border-bottom-width:3px; border-radius:6px; padding:1px 8px; font-weight:700; }
+  .status { font-size:16px; min-height:24px; }
+  .status.locked { color:var(--accent); font-weight:700; }
+  .status.skipped { color:var(--danger); }
+  .controls { display:flex; gap:10px; margin-top:6px; flex-wrap:wrap; justify-content:center; }
+  .controls .btn { display:none; } /* keyboard-driven; hidden until needed */
+  #tapPad { width:160px; height:160px; border-radius:50%; background:var(--panel); border:3px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:15px; color:var(--dim); user-select:none; }
+  #tapPad.flash { background:var(--accent); border-color:var(--accent); color:#000; font-weight:800; }
+  #audio { width:100%; max-width:420px; height:44px; margin-top:6px; }
+  .foot { padding:12px 20px; border-top:1px solid var(--border); color:var(--dim); font-size:12px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">TAP-TO-VERIFY BPM</div>
+  <div class="progress" id="progress">…</div>
+</header>
+<main>
+  <div class="song-title" id="songTitle">Loading…</div>
+  <div class="song-artist" id="songArtist"></div>
+  <div class="bpm-label">Tempo</div>
+  <div class="bpm-big" id="bpmBig">—</div>
+  <div class="status" id="status">Tap <span class="keycap">Space</span> in time with the song until the tempo locks</div>
+  <div id="tapPad">TAP</div>
+  <div class="hint" id="hint">
+    <b>Space</b> = tap · <b>3</b> = 3/4 waltz · <b>4</b> = 4/4 · <b>Enter</b> = lock now ·
+    <b>N</b> = skip · <b>P</b> = previous · <b>R</b> = replay · <b>Esc</b> = stop
+  </div>
+  <div class="controls" id="controls"></div>
+  <audio id="audio" controls preload="metadata"></audio>
+</main>
+<div class="foot" id="foot"></div>
+
+<script>
+(function () {
+  var API = "";
+  var list = [], idx = 0;
+  var taps = [];          // timestamps of current run
+  var lockedBpm = null;
+  var meter = 4;          // beats per bar (3 = 3/4 waltz, 4 = 4/4)
+  var audioUnlocked = false; // set on first user gesture (browser autoplay policy)
+  var audio = document.getElementById("audio");
+
+  var songTitle = document.getElementById("songTitle");
+  var songArtist = document.getElementById("songArtist");
+  var bpmBig = document.getElementById("bpmBig");
+  var status = document.getElementById("status");
+  var progress = document.getElementById("progress");
+  var tapPad = document.getElementById("tapPad");
+  var foot = document.getElementById("foot");
+
+  function median(arr) {
+    var s = arr.slice().sort(function (a, b) { return a - b; });
+    var mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  }
+
+  // Interval array from tap timestamps (gaps between consecutive taps).
+  function intervals() {
+    var out = [];
+    for (var i = 1; i < taps.length; i++) out.push(taps[i] - taps[i - 1]);
+    return out;
+  }
+
+  // Robust current BPM: median of the most recent intervals, ignoring outliers
+  // that are more than 50% from the median (a single mistap must not swing it).
+  function bpmFromTaps() {
+    var iv = intervals();
+    if (iv.length < 2) return null;
+    var med = median(iv.slice(-5));
+    var clean = iv.slice(-5).filter(function (x) { return Math.abs(x - med) / med < 0.5; });
+    if (clean.length === 0) return null;
+    var bpm = 60000 / median(clean);
+    return (bpm >= 30 && bpm <= 300) ? Math.round(bpm * 10) / 10 : null;
+  }
+
+  // Lock only when the last 4 intervals are tightly grouped (±4% of their own
+  // median). This is the "tempo locked" criterion — a human holding a steady
+  // beat produces nearly equal gaps, so this fires cleanly instead of drifting.
+  function tapsConsistent() {
+    if (taps.length < 5) return false;
+    var iv = intervals().slice(-4);
+    if (iv.length < 4) return false;
+    var med = median(iv);
+    if (med <= 0) return false;
+    return iv.every(function (x) { return Math.abs(x - med) / med < 0.04; });
+  }
+
+  function resetTaps() {
+    taps = [];
+    lockedBpm = null;
+    bpmBig.textContent = "—";
+    bpmBig.style.color = "";
+    status.className = "status";
+    status.textContent = "Meter " + meter + "/4  ·  Tap Space in time with the song until the tempo locks";
+  }
+
+  function updateMeterDisplay() {
+    status.textContent = "Meter " + meter + "/4  ·  Tap Space in time with the song until the tempo locks";
+  }
+
+  function showSong() {
+    if (idx >= list.length) {
+      songTitle.textContent = "All done!";
+      songArtist.textContent = "";
+      bpmBig.textContent = "✓";
+      status.textContent = "Every song has a verified BPM.";
+      status.className = "status locked";
+      progress.textContent = list.length + "/" + list.length + " verified";
+      foot.textContent = "Close this tab — the library is fully verified.";
+      return;
+    }
+    var s = list[idx];
+    songTitle.textContent = s.title;
+    songArtist.textContent = s.artist || "";
+    progress.textContent = (idx + 1) + "/" + list.length + (s.currentBpm ? "  ·  previous bpm " + s.currentBpm : "");
+    meter = (s.timeSig && s.timeSig[0] > 0) ? s.timeSig[0] : 4;
+    resetTaps();
+    // Autoplay is only allowed after the user has gestured once (browser policy).
+    if (audioUnlocked) playCurrent();
+    else {
+      status.textContent = "Press SPACE to start playback, then keep tapping in time";
+      status.className = "status";
+    }
+  }
+
+  function playCurrent() {
+    if (idx >= list.length) return;
+    audio.src = "/api/song-audio/" + encodeURIComponent(list[idx].id);
+    audio.currentTime = 0;
+    audio.play().catch(function () {});
+  }
+
+  function tap() {
+    if (idx >= list.length || lockedBpm) return;
+    var now = performance.now();
+    // fresh run after 2s gap (a bit more than one slow beat)
+    if (taps.length && now - taps[taps.length - 1] > 2000) taps = [];
+    taps.push(now);
+    while (taps.length > 10) taps.shift();
+
+    // flash
+    tapPad.classList.add("flash");
+    setTimeout(function () { tapPad.classList.remove("flash"); }, 60);
+
+    if (taps.length < 3) {
+      status.textContent = "Keep tapping…";
+      return;
+    }
+    var bpm = bpmFromTaps();
+    if (bpm) {
+      bpmBig.textContent = bpm;
+      if (tapsConsistent()) {
+        lockedBpm = bpm;
+        bpmBig.style.color = "";
+        status.className = "status locked";
+        status.textContent = "Locked at " + bpm + " BPM — advancing…";
+        setTimeout(lockAndAdvance, 700);
+      } else {
+        status.textContent = bpm + " BPM — hold the beat steady (last 4 must match)";
+      }
+    }
+  }
+
+  function lockAndAdvance() {
+    var bpm = lockedBpm;
+    if (!bpm || idx >= list.length) return;
+    var s = list[idx];
+    fetch("/api/verify/lock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: s.id, bpm: bpm, timeSig: [meter, 4] }),
+    }).then(function (r) { return r.json(); }).then(function () {
+      idx++;
+      showSong();
+    }).catch(function () {
+      status.className = "status";
+      status.textContent = "Error saving — trying again…";
+      setTimeout(lockAndAdvance, 800);
+    });
+  }
+
+  function skip() {
+    if (idx >= list.length) return;
+    idx++;
+    showSong();
+  }
+  function prev() {
+    if (idx <= 0) return;
+    idx--;
+    showSong();
+  }
+  function lockNow() {
+    if (lockedBpm) return;
+    var bpm = bpmFromTaps();
+    if (bpm) { lockedBpm = bpm; lockAndAdvance(); }
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.repeat) return;
+    // First keypress unlocks audio (browser autoplay policy) and starts playback.
+    if (!audioUnlocked) {
+      audioUnlocked = true;
+      playCurrent();
+    }
+    switch (e.code) {
+      case "Space": e.preventDefault(); tap(); break;
+      case "Enter": e.preventDefault(); lockNow(); break;
+      case "Digit3": meter = 3; updateMeterDisplay(); break;
+      case "Digit4": meter = 4; updateMeterDisplay(); break;
+      case "KeyN": skip(); break;
+      case "KeyP": prev(); break;
+      case "KeyR": playCurrent(); break;
+      case "Escape": audio.pause(); break;
+    }
+  });
+
+  var qp = new URLSearchParams(window.location.search);
+  var onlySong = qp.get("song"); // ?song=<id> to re-tap a specific song
+
+  fetch("/api/verify/list").then(function (r) { return r.json(); }).then(function (d) {
+    list = d.pending || [];
+    if (onlySong) {
+      // Re-tap a single specific song even if it's already verified.
+      list = [{ id: onlySong }];
+      songTitle.textContent = "Loading " + onlySong + "…";
+    }
+    if (!list.length) {
+      songTitle.textContent = "Nothing to verify";
+      status.textContent = "All songs already have verified BPMs.";
+      return;
+    }
+    showSong();
+  }).catch(function () {
+    songTitle.textContent = "Error loading list";
+  });
+})();
+</script>
+</body>
+</html>

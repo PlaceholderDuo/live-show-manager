@@ -135,7 +135,7 @@ function AddSongDialog.render(
             reaper.ImGui_PushStyleColor(
                 ctx,
                 reaper.ImGui_Col_Text(),
-                1.0, 0.3, 0.3, 1.0
+                Util.rgba(1.0, 0.3, 0.3, 1.0)
             )
 
             reaper.ImGui_Text(

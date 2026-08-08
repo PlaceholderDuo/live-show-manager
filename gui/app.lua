@@ -2,13 +2,16 @@
 -- Live Show Manager
 -- gui/app.lua
 --
--- Main application window and GUI loop.
--- Coordinates all panels, dialogs, and actions.
+-- Launch/status console. The TUI (singer server) is now the
+-- playlist manager: build/load/edit your set there and it is
+-- pushed automatically to this bridge. This window only:
+--   1. Launches the performance Runner (which hot-follows
+--      data/setlists/_last_session.json from the web server)
+--   2. Shows live follow / transport status
+--   3. Network + troubleshooting info for the phones
 ------------------------------------------------------------
 
 local AppGUI = {}
-
-
 
 function AppGUI.run()
 
@@ -17,115 +20,163 @@ function AppGUI.run()
             "Live Show Manager"
         )
 
-    local Library =
-        App.require("backend.library")
-
     local Util =
         App.require("backend.util")
 
-    local LibraryPanel =
-        App.require("gui.library_panel")
+    local Runner =
+        App.require("runner.runner")
 
-    local SetlistPanel =
-        App.require("gui.setlist_panel")
+    local FS =
+        App.require("backend.filesystem")
 
-    local DetailsPanel =
-        App.require("gui.details_panel")
+    local JSON =
+        App.require("backend.json")
 
-    local AddSongDialog =
-        App.require("gui.add_song_dialog")
+    local FOLLOW_SESSION_PATH =
+        Util.joinPath(
+            App.root,
+            "data",
+            "setlists",
+            "_last_session.json"
+        )
 
-    local RemoveSongDialog =
-        App.require("gui.remove_song_dialog")
+    local runner = nil
 
-    local SetlistModel =
-        App.require("models.setlist")
-
-
-    local library = Library.scan()
-    local setlist = {}
-    local setlistName = nil
-    local selectedLibraryIdx = nil
-    local selectedSetlistIdx = nil
-
-    local addSongState = {
-        open = false,
-        searchText = "",
-        title = "",
-        artist = "",
-        bpmStr = "",
-        key = "",
-        notes = "",
-        audioPath = nil
-    }
-
-    local removeSongState = {
-        open = false,
-        searchText = "",
-        selectedSong = nil
-    }
-
-    local loadSetlistState = {
-        open = false,
-        savedNames = {},
-        selectedIdx = nil
-    }
+    local followName = ""
+    local followCount = 0
+    local followPreview = ""
 
     local statusMessage = nil
     local statusTimer = 0
+
     local showNetworkInfo = false
-    local netInfo = { ip = "?", bonjour = "?", serverUp = false, fetched = false, showTroubleshoot = false }
+    local netInfo = {
+        ip = "?",
+        bonjour = "?",
+        serverUp = false,
+        fetched = false,
+        showTroubleshoot = false
+    }
 
+    local refreshTimer = 0
 
-    local function refreshNetInfo()
-        local ret1, out1 = reaper.ExecProcess("ifconfig en0 2>/dev/null | grep 'inet ' | awk '{print $2}'", 0)
-        if ret1 == 0 and out1 and out1 ~= "" then
-            netInfo.ip = out1:match("%d+%.%d+%.%d+%.%d+") or "?"
-        end
-        netInfo.bonjour = "RDFX1-macbook-pro.local"
-        local ret2, out2 = reaper.ExecProcess("pgrep -f 'node.*server.js' > /dev/null 2>&1 && echo 'YES' || echo 'NO'", 0)
-        netInfo.serverUp = out2 and out2:match("YES") and true or false
-        netInfo.fetched = true
-    end
-
+    ------------------------------------------------------------
+    -- Helpers
+    ------------------------------------------------------------
 
     local function setStatus(msg)
         statusMessage = msg
         statusTimer = 300
     end
 
+    local function refreshNetInfo()
 
-    local function rescanLibrary()
-        library = Library.scan()
-        selectedLibraryIdx = nil
+        local ok1, out1 =
+            reaper.ExecProcess(
+                "ifconfig en0 2>/dev/null | grep 'inet ' | awk '{print $2}'",
+                0
+            )
+
+        if ok1 == 0 and out1 and out1 ~= "" then
+            netInfo.ip = out1:match("%d+%.%d+%.%d+%.%d+") or "?"
+        end
+
+        local ok2, out2 =
+            reaper.ExecProcess(
+                "pgrep -f 'node.*server.js' > /dev/null 2>&1 && echo YES || echo NO",
+                0
+            )
+
+        netInfo.serverUp = out2 and out2:match("YES") and true or false
+        netInfo.fetched = true
     end
 
+    -- Preview the currently-pushed set (without launching) so the window
+    -- shows what LAUNCH will follow. Runs every ~2s.
+    local function refreshFollowPreview()
+        local ok, raw =
+            pcall(FS.read, FOLLOW_SESSION_PATH)
 
-    local function closeDialogs()
-        addSongState.open = false
-        removeSongState.open = false
-        loadSetlistState.open = false
+        if not ok or not raw or raw == "" then
+            followPreview = "No live set pushed yet"
+            return
+        end
+
+        local okd, data =
+            pcall(JSON.decode, raw)
+
+        if not okd or not data or not data.songs then
+            followPreview = "Live set: unreadable"
+            return
+        end
+
+        followName = data.name or "Live set"
+        followCount = #data.songs
+        local title = data.songs[1] and data.songs[1].title or ""
+        followPreview = "(" .. followCount .. " songs)"
+            .. (title ~= "" and (" — starts with \"" .. title .. "\"") or "")
     end
 
-
-    local function resetAddSongState()
-        addSongState.searchText = ""
-        addSongState.title = ""
-        addSongState.artist = ""
-        addSongState.bpmStr = ""
-        addSongState.key = ""
-        addSongState.notes = ""
-        addSongState.audioPath = nil
+    -- Pull the CURRENT TUI band set into the live session so the runner
+    -- reflects the TUI's queue even if a push hasn't happened yet. Short
+    -- curl timeout keeps this from blocking REAPER on a slow/missing server.
+    local function pullTuiSet()
+        reaper.ExecProcess(
+            "curl -s -m 3 -X POST http://localhost:3000/api/local/setlist/pull-tui "
+            .. "-H 'Content-Type: application/json' -d '{}' > /dev/null 2>&1",
+            4000
+        )
     end
 
+    local function launch()
 
+        -- Always reflect the CURRENT TUI band set before going live.
+        pullTuiSet()
+
+        -- Idempotent: launchd keeps the web server up anyway.
+        local controlPath =
+            App.root .. "/web/control.sh"
+
+        local ret, output =
+            reaper.ExecProcess(
+                "bash '" .. controlPath .. "' start",
+                0
+            )
+
+        if ret ~= 0 then
+            setStatus("Server start: " .. tostring(output or ""))
+        end
+
+        local r = Runner.new()
+        local ok, err = r:loadFollowShow()
+
+        if ok then
+            runner = r
+            r:start()
+            followName = r.show and r.show.name or "Live set"
+            followCount = r.totalSongs
+            setStatus(
+                "FOLLOWING TUI set: "
+                .. followName
+                .. " ("
+                .. r.totalSongs
+                .. " songs)"
+            )
+        else
+            setStatus(err or "No live set yet")
+        end
+    end
+
+    ------------------------------------------------------------
+    -- GUI loop
+    ------------------------------------------------------------
 
     local function loop()
 
         reaper.ImGui_SetNextWindowSize(
             ctx,
-            480,
-            520,
+            460,
+            350,
             reaper.ImGui_Cond_FirstUseEver()
         )
 
@@ -138,607 +189,168 @@ function AppGUI.run()
 
         if visible then
 
+            refreshTimer = refreshTimer + 1
+            if refreshTimer >= 120 then
+                refreshTimer = 0
+                refreshFollowPreview()
+            end
 
             ----------------------------------------------------
-            -- Toolbar
+            -- Launch / follow status
+            ----------------------------------------------------
+
+            reaper.ImGui_Text(
+                ctx,
+                "Playlist manager: the TUI (singer server). This window launches the REAPER runner."
+            )
+
+            reaper.ImGui_Separator(ctx)
+
+            reaper.ImGui_PushStyleColor(
+                ctx,
+                reaper.ImGui_Col_Button(),
+                Util.rgba(0.15, 0.6, 0.3, 1.0)
+            )
+            reaper.ImGui_PushStyleColor(
+                ctx,
+                reaper.ImGui_Col_ButtonHovered(),
+                Util.rgba(0.2, 0.7, 0.4, 1.0)
+            )
+
+            if reaper.ImGui_Button(
+                ctx,
+                "▶ LAUNCH PERFORMANCE"
+            ) then
+                launch()
+            end
+
+            reaper.ImGui_PopStyleColor(ctx, 2)
+
+            if runner then
+                reaper.ImGui_Text(
+                    ctx,
+                    "● FOLLOWING: "
+                    .. followName
+                    .. " ("
+                    .. followCount
+                    .. " songs)"
+                )
+                local now = runner.currentSong
+                    and runner.currentSong.title
+                    or (runner.playing and "playing..." or "standby")
+                reaper.ImGui_Text(ctx, "Current: " .. now)
+            else
+                reaper.ImGui_Text(
+                    ctx,
+                    "○ Standby — tap LAUNCH to follow the TUI live set"
+                )
+                reaper.ImGui_Text(
+                    ctx,
+                    "Set ready: " .. followPreview
+                )
+            end
+
+            if runner then
+                reaper.ImGui_SameLine(ctx)
+                if reaper.ImGui_Button(ctx, "Restart") then
+                    Runner.stop(runner)
+                    launch()
+                end
+            end
+
+            reaper.ImGui_Separator(ctx)
+
+            ----------------------------------------------------
+            -- Network info + troubleshooting
             ----------------------------------------------------
 
             if reaper.ImGui_Button(
                 ctx,
-                "Add Song"
+                showNetworkInfo and "▾ Network Info" or "▸ Network Info"
             ) then
-
-                resetAddSongState()
-
-                addSongState.open = true
-                removeSongState.open = false
-                loadSetlistState.open = false
-
+                showNetworkInfo = not showNetworkInfo
+                if showNetworkInfo and not netInfo.fetched then
+                    refreshNetInfo()
+                end
             end
 
-            reaper.ImGui_SameLine(ctx)
+            if showNetworkInfo then
 
-            if reaper.ImGui_Button(
-                ctx,
-                "Remove Song"
-            ) then
+                reaper.ImGui_Indent(ctx)
+                reaper.ImGui_Text(ctx, "Refresh interval: on open only (click to re-refresh)")
 
-                removeSongState.open = true
-                addSongState.open = false
-                loadSetlistState.open = false
-
-            end
-
-    reaper.ImGui_SameLine(ctx)
-
-    if reaper.ImGui_Button(
-        ctx,
-        "Refresh Library"
-    ) then
-
-        rescanLibrary()
-        setStatus(
-            "Library refreshed"
-        )
-
-    end
-
-    reaper.ImGui_SameLine(ctx)
-
-    reaper.ImGui_PushStyleColor(
-        ctx,
-        reaper.ImGui_Col_Button(),
-        { 0.15, 0.6, 0.3, 1.0 }
-    )
-    reaper.ImGui_PushStyleColor(
-        ctx,
-        reaper.ImGui_Col_ButtonHovered(),
-        { 0.2, 0.7, 0.4, 1.0 }
-    )
-
-    if reaper.ImGui_Button(
-        ctx,
-        "▶ LAUNCH PERFORMANCE"
-    ) then
-
-        if not setlistName or setlistName == "" then
-            setStatus("Save setlist first")
-        elseif #setlist == 0 then
-            setStatus("Setlist is empty")
-        else
-            -- Start the Node.js bridge server (launchd auto-restarts on crash)
-            local controlPath = App.root .. "/web/control.sh"
-            local ret, output = reaper.ExecProcess("bash '" .. controlPath .. "' start", 0)
-            if ret ~= 0 then
-                setStatus("Server start: " .. output)
-            end
-
-            local Runner = App.require("runner.runner")
-            local r = Runner.new()
-            r:loadShow(setlist, library, setlistName)
-            r:start()
-            setStatus("Runner started for: " .. setlistName)
-        end
-
-    end
-
-    reaper.ImGui_PopStyleColor(ctx, 2)
-
-    ----------------------------------------------------
-    -- Network Info + Troubleshooting
-    ----------------------------------------------------
-    if reaper.ImGui_Button(ctx, showNetworkInfo and "▾ Network Info" or "▸ Network Info") then
-        showNetworkInfo = not showNetworkInfo
-        if showNetworkInfo and not netInfo.fetched then refreshNetInfo() end
-    end
-
-    if showNetworkInfo then
-        reaper.ImGui_Indent(ctx)
-        reaper.ImGui_Text(ctx, "Refresh interval: on open only (click to re-refresh)")
-
-        if reaper.ImGui_Button(ctx, "⟳ Refresh") then
-            refreshNetInfo()
-        end
-
-        reaper.ImGui_SameLine(ctx)
-        if reaper.ImGui_Button(ctx, "Open iPhone URL") then
-            reaper.ExecProcess("open http://" .. netInfo.ip .. ":3000/", 0)
-        end
-
-        reaper.ImGui_Separator(ctx)
-        reaper.ImGui_Text(ctx, "Server")
-        reaper.ImGui_SameLine(ctx)
-        if netInfo.serverUp then
-            reaper.ImGui_Text(ctx, "● RUNNING  (port 3000)")
-        else
-            reaper.ImGui_Text(ctx, "○ STOPPED  (tap LAUNCH PERFORMANCE above)")
-        end
-
-        reaper.ImGui_Text(ctx, "Mac IP")
-        reaper.ImGui_SameLine(ctx)
-        reaper.ImGui_Text(ctx, netInfo.ip .. ":3000")
-
-        reaper.ImGui_Text(ctx, "Bonjour")
-        reaper.ImGui_SameLine(ctx)
-        reaper.ImGui_Text(ctx, netInfo.bonjour .. ":3000")
-
-        reaper.ImGui_Text(ctx, "iPhone URL")
-        reaper.ImGui_SameLine(ctx)
-        reaper.ImGui_Text(ctx, "http://" .. netInfo.ip .. ":3000/")
-
-        reaper.ImGui_Text(ctx, "Legacy URL")
-        reaper.ImGui_SameLine(ctx)
-        reaper.ImGui_Text(ctx, "http://" .. netInfo.ip .. ":3000/index.legacy.html")
-
-        reaper.ImGui_Separator(ctx)
-
-        if reaper.ImGui_Button(ctx, "▸ Troubleshooting") then
-            netInfo.showTroubleshoot = not netInfo.showTroubleshoot
-        end
-        if netInfo.showTroubleshoot then
-            reaper.ImGui_BulletText(ctx, "iPhone can't connect?")
-            reaper.ImGui_Indent(ctx)
-            reaper.ImGui_Text(ctx, "1. Both devices on same WiFi network")
-            reaper.ImGui_Text(ctx, "2. Firewall is OFF (Preferences > Security)")
-            reaper.ImGui_Text(ctx, "3. Open Safari, type: http://" .. netInfo.ip .. ":3000/")
-            reaper.ImGui_Text(ctx, "4. Tap 'Add to Home Screen' for fullscreen")
-            reaper.ImGui_Unindent(ctx)
-
-            reaper.ImGui_BulletText(ctx, "Server won't start?")
-            reaper.ImGui_Indent(ctx)
-            reaper.ImGui_Text(ctx, "cd ~/Library/Application\\ Support/REAPER/")
-            reaper.ImGui_Text(ctx, "  Scripts/Live\\ Show\\ Manager/web")
-            reaper.ImGui_Text(ctx, "./control.sh start")
-            reaper.ImGui_Unindent(ctx)
-
-            reaper.ImGui_BulletText(ctx, "No BPM/song data on controller?")
-            reaper.ImGui_Indent(ctx)
-            reaper.ImGui_Text(ctx, "Click LAUNCH PERFORMANCE above")
-            reaper.ImGui_Text(ctx, "This starts the Lua runner + server")
-            reaper.ImGui_Unindent(ctx)
-
-            reaper.ImGui_BulletText(ctx, "Transport buttons don't work?")
-            reaper.ImGui_Indent(ctx)
-            reaper.ImGui_Text(ctx, "REAPER > Preferences > Control Surfaces")
-            reaper.ImGui_Text(ctx, "Add OSC: Local port 8000, Dest 127.0.0.1:9000")
-            reaper.ImGui_Unindent(ctx)
-
-            reaper.ImGui_BulletText(ctx, "Need to restart server?")
-            reaper.ImGui_Indent(ctx)
-            reaper.ImGui_Text(ctx, "cd ~/Library/Application\\ Support/REAPER/")
-            reaper.ImGui_Text(ctx, "  Scripts/Live\\ Show\\ Manager/web")
-            reaper.ImGui_Text(ctx, "./control.sh restart")
-            reaper.ImGui_Unindent(ctx)
-        end
-
-        reaper.ImGui_Unindent(ctx)
-    end
-
-    reaper.ImGui_Separator(ctx)
-
-
-            ----------------------------------------------------
-            -- Library Panel
-            ----------------------------------------------------
-
-            local newLib =
-                LibraryPanel.render(
-                    ctx,
-                    library,
-                    selectedLibraryIdx
-                )
-
-            if newLib ~= nil then
-                selectedLibraryIdx = newLib
-            end
-
-
-            ----------------------------------------------------
-            -- Setlist Panel
-            ----------------------------------------------------
-
-            local newSet,
-                add,
-                remove,
-                up,
-                down,
-                save,
-                load,
-                build =
-                SetlistPanel.render(
-                    ctx,
-                    library,
-                    setlist,
-                    selectedSetlistIdx,
-                    setlistName
-                )
-
-            if newSet ~= nil then
-                selectedSetlistIdx = newSet
-            end
-
-
-            ----------------------------------------------------
-            -- Setlist: Add song from library
-            ----------------------------------------------------
-
-            if add and selectedLibraryIdx then
-
-                local songId =
-                    library[
-                        selectedLibraryIdx
-                    ].id
-
-                if not Util.contains(
-                    setlist,
-                    songId
-                ) then
-
-                    table.insert(
-                        setlist,
-                        songId
-                    )
-
-                    setStatus(
-                        "Added to setlist"
-                    )
-
+                if reaper.ImGui_Button(ctx, "⟳ Refresh") then
+                    refreshNetInfo()
                 end
 
-            end
-
-
-            ----------------------------------------------------
-            -- Setlist: Remove song
-            ----------------------------------------------------
-
-            if remove
-            and selectedSetlistIdx then
-
-                table.remove(
-                    setlist,
-                    selectedSetlistIdx
-                )
-
-                selectedSetlistIdx = nil
-                setStatus("Removed from setlist")
-
-            end
-
-
-            ----------------------------------------------------
-            -- Setlist: Move up
-            ----------------------------------------------------
-
-            if up
-            and selectedSetlistIdx
-            and selectedSetlistIdx > 1 then
-
-                local idx =
-                    selectedSetlistIdx
-
-                setlist[idx],
-                setlist[idx - 1] =
-                    setlist[idx - 1],
-                    setlist[idx]
-
-                selectedSetlistIdx =
-                    idx - 1
-
-            end
-
-
-            ----------------------------------------------------
-            -- Setlist: Move down
-            ----------------------------------------------------
-
-            if down
-            and selectedSetlistIdx
-            and selectedSetlistIdx
-                < #setlist then
-
-                local idx =
-                    selectedSetlistIdx
-
-                setlist[idx],
-                setlist[idx + 1] =
-                    setlist[idx + 1],
-                    setlist[idx]
-
-                selectedSetlistIdx =
-                    idx + 1
-
-            end
-
-
-            ----------------------------------------------------
-            -- Setlist: Save
-            ----------------------------------------------------
-
-            if save then
-
-                local ret, name =
-                    reaper.GetUserInputs(
-                        "Save Setlist",
-                        1,
-                        "Setlist name:",
-                        setlistName or ""
+                reaper.ImGui_SameLine(ctx)
+                if reaper.ImGui_Button(ctx, "Open iPhone URL") then
+                    reaper.ExecProcess(
+                        "open http://" .. netInfo.ip .. ":3000/",
+                        0
                     )
-
-                if ret then
-
-                    local s =
-                        SetlistModel.new(
-                            name,
-                            setlist
-                        )
-
-                    local ok, err =
-                        SetlistModel.save(s)
-
-                    if ok then
-
-                        setlistName = name
-                        setStatus(
-                            "Saved: " .. name
-                        )
-
-                    else
-
-                        setStatus(
-                            "Save failed: "
-                            .. (err or "?")
-                        )
-
-                    end
-
                 end
 
-            end
+                reaper.ImGui_Separator(ctx)
 
-
-            ----------------------------------------------------
-            -- Setlist: Load
-            ----------------------------------------------------
-
-            if load then
-
-                loadSetlistState.savedNames =
-                    SetlistModel.list()
-
-                loadSetlistState.selectedIdx =
-                    nil
-
-                loadSetlistState.open = true
-
-            end
-
-
-            ----------------------------------------------------
-            -- Setlist: Build Show
-            ----------------------------------------------------
-
-            if build then
-
-                if not setlistName
-                or setlistName == ""
-                then
-
-                    setStatus(
-                        "Save setlist first"
-                    )
-
-                elseif #setlist == 0 then
-
-                    setStatus(
-                        "Setlist is empty"
-                    )
-
+                reaper.ImGui_Text(ctx, "Server")
+                reaper.ImGui_SameLine(ctx)
+                if netInfo.serverUp then
+                    reaper.ImGui_Text(ctx, "● RUNNING  (port 3000)")
                 else
+                    reaper.ImGui_Text(ctx, "○ STOPPED")
+                end
 
-                    local ShowBuilder =
-                        App.require(
-                            "builders.show_builder"
-                        )
+                reaper.ImGui_Text(ctx, "Mac IP")
+                reaper.ImGui_SameLine(ctx)
+                reaper.ImGui_Text(ctx, netInfo.ip .. ":3000")
 
-                    local ok, result =
-                        ShowBuilder.build(
-                            setlist,
-                            setlistName,
-                            library
-                        )
+                reaper.ImGui_Text(ctx, "iPhone URL")
+                reaper.ImGui_SameLine(ctx)
+                reaper.ImGui_Text(ctx, "http://" .. netInfo.ip .. ":3000/")
 
-                    if ok then
+                reaper.ImGui_Separator(ctx)
 
-                        setStatus(
-                            "Show built: "
-                            .. result
-                        )
+                if reaper.ImGui_Button(ctx, "▸ Troubleshooting") then
+                    netInfo.showTroubleshoot = not netInfo.showTroubleshoot
+                end
 
-                        local ret =
-                            reaper.MB(
-                                "Show project created.\n"
-                                .. "Open in REAPER?",
-                                "Build Complete",
-                                4
-                            )
+                if netInfo.showTroubleshoot then
 
-                        if ret == 6 then
+                    reaper.ImGui_BulletText(ctx, "iPhone can't connect?")
+                    reaper.ImGui_Indent(ctx)
+                    reaper.ImGui_Text(ctx, "1. Both devices on same WiFi network")
+                    reaper.ImGui_Text(ctx, "2. Firewall is OFF (Preferences > Security)")
+                    reaper.ImGui_Text(ctx, "3. Open Safari, type: http://" .. netInfo.ip .. ":3000/")
+                    reaper.ImGui_Text(ctx, "4. Tap 'Add to Home Screen' for fullscreen")
+                    reaper.ImGui_Unindent(ctx)
 
-                            reaper.OpenProject(
-                                result
-                            )
+                    reaper.ImGui_BulletText(ctx, "Server won't start?")
+                    reaper.ImGui_Indent(ctx)
+                    reaper.ImGui_Text(ctx, "cd ~/Library/Application\\ Support/REAPER/")
+                    reaper.ImGui_Text(ctx, "  Scripts/Live\\ Show\\ Manager/web")
+                    reaper.ImGui_Text(ctx, "./control.sh start")
+                    reaper.ImGui_Unindent(ctx)
 
-                        end
+                    reaper.ImGui_BulletText(ctx, "No song data on the controller?")
+                    reaper.ImGui_Indent(ctx)
+                    reaper.ImGui_Text(ctx, "1. TUI: import your playlist (band set)")
+                    reaper.ImGui_Text(ctx, "2. Click LAUNCH PERFORMANCE here")
+                    reaper.ImGui_Unindent(ctx)
 
-                    else
-
-                        setStatus(
-                            "Build failed: "
-                            .. (result or "?")
-                        )
-
-                    end
+                    reaper.ImGui_BulletText(ctx, "Transport buttons don't work?")
+                    reaper.ImGui_Indent(ctx)
+                    reaper.ImGui_Text(ctx, "REAPER > Preferences > Control Surfaces")
+                    reaper.ImGui_Text(ctx, "Add OSC: Local port 8000, Dest 127.0.0.1:9000")
+                    reaper.ImGui_Unindent(ctx)
 
                 end
 
-            end
-
-
-            ----------------------------------------------------
-            -- Load Setlist Dialog
-            ----------------------------------------------------
-
-            if loadSetlistState.open then
-
-                reaper.ImGui_OpenPopup(
-                    ctx,
-                    "Load Setlist"
-                )
-
-                local loadOpen = true
-                local loadVis, loadOpen =
-                    reaper.ImGui_BeginPopupModal(
-                        ctx,
-                        "Load Setlist",
-                        loadOpen,
-                        reaper.ImGui_WindowFlags_AlwaysAutoResize()
-                    )
-
-                if loadVis then
-
-                    local names =
-                        loadSetlistState.savedNames
-
-                    if #names == 0 then
-
-                        reaper.ImGui_Text(
-                            ctx,
-                            "No saved setlists."
-                        )
-
-                    else
-
-                        for i, name in
-                            ipairs(names) do
-
-                            local isSel =
-                                loadSetlistState.selectedIdx
-                                == i
-
-                            if reaper.ImGui_Selectable(
-                                ctx,
-                                name
-                                    .. "##loadset"
-                                    .. i,
-                                isSel
-                            ) then
-                                loadSetlistState.selectedIdx
-                                    = i
-                            end
-
-                        end
-
-                    end
-
-                    reaper.ImGui_Separator(ctx)
-
-                    if loadSetlistState.selectedIdx
-                    then
-
-                        if reaper.ImGui_Button(
-                            ctx,
-                            "Load"
-                        ) then
-
-                            local name =
-                                names[
-                                    loadSetlistState.selectedIdx
-                                ]
-
-                            local loaded, err =
-                                SetlistModel.load(
-                                    name
-                                )
-
-                            if loaded then
-
-                                setlist =
-                                    loaded.songs
-                                setlistName =
-                                    loaded.name
-                                selectedSetlistIdx =
-                                    nil
-
-                                setStatus(
-                                    "Loaded: "
-                                    .. name
-                                )
-
-                            else
-
-                                setStatus(
-                                    "Load failed: "
-                                    .. (err or "?")
-                                )
-
-                            end
-
-                            loadSetlistState.open
-                                = false
-                            reaper.ImGui_CloseCurrentPopup(
-                                ctx
-                            )
-
-                        end
-
-                        reaper.ImGui_SameLine(ctx)
-
-                    end
-
-                    if reaper.ImGui_Button(
-                        ctx,
-                        "Cancel"
-                    ) then
-                        loadSetlistState.open
-                            = false
-                        reaper.ImGui_CloseCurrentPopup(
-                            ctx
-                        )
-                    end
-
-                    reaper.ImGui_EndPopup(ctx)
-
-                end
+                reaper.ImGui_Unindent(ctx)
 
             end
 
-
-            ----------------------------------------------------
-            -- Details Panel (for selected setlist song)
-            ----------------------------------------------------
-
-            if selectedSetlistIdx then
-
-                local songId =
-                    setlist[
-                        selectedSetlistIdx
-                    ]
-
-                for _, s in ipairs(library) do
-
-                    if s.id == songId then
-                        DetailsPanel.render(
-                            ctx,
-                            s
-                        )
-                        break
-                    end
-
-                end
-
-            end
-
+            reaper.ImGui_Separator(ctx)
 
             ----------------------------------------------------
             -- Status bar
@@ -748,179 +360,15 @@ function AppGUI.run()
 
                 reaper.ImGui_Separator(ctx)
 
-                reaper.ImGui_Text(
-                    ctx,
-                    statusMessage
-                )
+                reaper.ImGui_Text(ctx, statusMessage)
 
-                statusTimer =
-                    statusTimer - 1
+                statusTimer = statusTimer - 1
 
                 if statusTimer <= 0 then
                     statusMessage = nil
                 end
 
             end
-
-
-            ----------------------------------------------------
-            -- Add Song Dialog
-            ----------------------------------------------------
-
-            local addChanged,
-                addSubmitted,
-                addCancelled =
-                AddSongDialog.render(
-                    ctx,
-                    library,
-                    addSongState
-                )
-
-            if addSubmitted then
-
-                local SongManager =
-                    App.require(
-                        "backend.song_manager"
-                    )
-
-                local bpm = tonumber(
-                    addSongState.bpmStr
-                ) or 0
-
-                local data = {
-                    title = addSongState.title,
-                    artist = addSongState.artist,
-                    bpm = bpm,
-                    key = addSongState.key,
-                    notes = addSongState.notes
-                }
-
-                if not data.title
-                or data.title == "" then
-
-                    setStatus(
-                        "Title is required"
-                    )
-
-                else
-
-                    local song, err =
-                        SongManager.add(data)
-
-                    if song then
-
-                        if addSongState.audioPath
-                        then
-
-                            local AudioImport =
-                                App.require(
-                                    "backend.audio_import"
-                                )
-
-                            AudioImport.import(
-                                addSongState.audioPath,
-                                song.path
-                            )
-
-                        end
-
-                        rescanLibrary()
-                        setStatus(
-                            "Added: "
-                            .. data.title
-                        )
-
-                    else
-
-                        setStatus(
-                            "Error: "
-                            .. (err or "?")
-                        )
-
-                    end
-
-                end
-
-                addSongState.open = false
-                reaper.ImGui_CloseCurrentPopup(
-                    ctx
-                )
-
-            end
-
-            if addCancelled then
-                addSongState.open = false
-                reaper.ImGui_CloseCurrentPopup(
-                    ctx
-                )
-            end
-
-
-            ----------------------------------------------------
-            -- Remove Song Dialog
-            ----------------------------------------------------
-
-            local remSubmitted,
-                remCancelled =
-                RemoveSongDialog.render(
-                    ctx,
-                    library,
-                    removeSongState
-                )
-
-            if remSubmitted
-            and removeSongState.selectedSong
-            then
-
-                local SongManager =
-                    App.require(
-                        "backend.song_manager"
-                    )
-
-                local song =
-                    removeSongState.selectedSong
-
-                local ok, err =
-                    SongManager.remove(song)
-
-                if ok then
-
-                    local id = song.id
-
-                    for i = #setlist, 1, -1 do
-                        if setlist[i] == id then
-                            table.remove(
-                                setlist,
-                                i
-                            )
-                        end
-                    end
-
-                    rescanLibrary()
-                    setStatus(
-                        "Removed: "
-                        .. song.title
-                    )
-
-                else
-
-                    setStatus(
-                        "Error: "
-                        .. (err or "?")
-                    )
-
-                end
-
-                removeSongState.open = false
-                reaper.ImGui_CloseCurrentPopup(ctx)
-
-            end
-
-            if remCancelled then
-                removeSongState.open = false
-                reaper.ImGui_CloseCurrentPopup(ctx)
-            end
-
 
             reaper.ImGui_End(ctx)
 
@@ -932,13 +380,16 @@ function AppGUI.run()
 
     end
 
+    refreshFollowPreview()
+    refreshNetInfo()
 
+    -- Pull from the TUI right when the script opens, then preview it.
+    pullTuiSet()
+    refreshFollowPreview()
 
     reaper.defer(loop)
 
 end
-
-
 
 ------------------------------------------------------------
 

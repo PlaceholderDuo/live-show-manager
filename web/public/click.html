@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Click — Live Show Manager</title>
+<style>
+  body {
+    margin: 0; height: 100vh; background: #000; color: #eee;
+    font-family: -apple-system, "SF Pro Display", sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  #status { font-size: 5rem; font-weight: 800; letter-spacing: 0.05em; }
+  #meta { font-size: 1.6rem; color: #999; margin-top: 1rem; }
+  #barbeat { font-size: 3rem; margin-top: 2rem; color: #ffd24a; }
+  #hint { font-size: 1.2rem; color: #666; margin-top: 3rem; }
+  .dot { display:inline-block; width:1.1em; height:1.1em; border-radius:50%; margin:0 0.3em;
+         background:#333; vertical-align:middle; }
+  .dot.on { background:#ffd24a; }
+</style>
+</head>
+<body>
+  <div id="status">—</div>
+  <div id="meta">Click output: <b>WebAudio</b> → default device</div>
+  <div id="barbeat"></div>
+  <div id="hint">Open this page on the Mac and keep it in the foreground. Audio goes to the
+    Mac's default output device. Click syncs to the REAPER transport / count-in.
+    (At the rig, set <code>output</code> in <code>data/click.json</code> to
+    <code>midi</code> to send beat notes to the Force instead.)</div>
+<script>
+(function () {
+  var API = "http://" + window.location.hostname + ":3000/api/state";
+  var statusEl = document.getElementById("status");
+  var barbeatEl = document.getElementById("barbeat");
+  var ctx = null;
+  var playing = false;
+  var bpm = 120;
+  var position = 0;
+  var countIn = null;
+  var timeSig = null;
+  var lastScheduledBeat = -1;
+  var clickGain = 0.9;
+  var downbeatGain = 1.2;
+
+  function ensureCtx() {
+    if (ctx) return;
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      ctx = new AC();
+    } catch (e) { console.warn("No WebAudio:", e); }
+  }
+
+  // One click tick. downbeat (beat 0 of bar) is accented.
+  function tick(ac, when, downbeat) {
+    var osc = ac.createOscillator();
+    var g = ac.createGain();
+    osc.type = "square";
+    osc.frequency.value = downbeat ? 1568 : 1319;
+    g.gain.value = 0;
+    g.gain.setValueAtTime(0, when);
+    g.gain.linearRampToValueAtTime(downbeat ? downbeatGain : clickGain, when + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.06);
+    osc.connect(g); g.connect(ac.destination);
+    osc.start(when); osc.stop(when + 0.08);
+  }
+
+  // ── Click scheduler ──
+  // Locked to REAPER's transport position, anchored to the song's downbeat.
+  // The runner publishes beatAnchorSec (the song region start in seconds), so
+  // relBeats = (position - beatAnchorSec) * bpm / 60 has beat 0 at the song's
+  // downbeat. Accent lands on beat 1 of each bar (beatsPerBar from timeSig).
+  // If no anchor is available we fall back to absolute beats from position 0.
+  var beatSec = function () { return 60 / (bpm > 0 ? bpm : 120); };
+  var beatsPerBar = function () { return (timeSig && timeSig[0] > 0) ? timeSig[0] : 4; };
+  var anchorSec = 0;
+  var anchorValid = false;
+
+  function accentForBeatIndex(absBeat) {
+    // absBeat is an integer absolute beat index (floor of position*bpm/60 grid).
+    if (anchorValid) {
+      var rel = ((absBeat * beatSec()) - anchorSec) * (bpm > 0 ? bpm : 120) / 60;
+      var floorRel = Math.floor(rel);
+      var mod = ((floorRel % beatsPerBar()) + beatsPerBar()) % beatsPerBar();
+      return mod === 0;
+    }
+    return (absBeat % beatsPerBar()) === 1;
+  }
+
+  function scheduleLoop() {
+    if (!ctx) return;
+    if (!playing) { lastScheduledBeat = -1; return; }
+
+    var now = ctx.currentTime;
+    // Reconstruct current position in audio time: we track how old our last
+    // poll snapshot was and extrapolate with real transport progress (1x).
+    var posNow = position + (now - posAtAudioTime) * 1.0;
+    var totalBeats = posNow * (bpm > 0 ? bpm : 120) / 60;
+    var nextBeat = Math.floor(totalBeats) + 1;
+
+    if (lastScheduledBeat < nextBeat) {
+      lastScheduledBeat = nextBeat - 1;
+    }
+    // Schedule a small window of beats ahead.
+    var horizon = nextBeat + 4;
+    for (var b = Math.max(lastScheduledBeat + 1, nextBeat); b <= horizon; b++) {
+      var beatTime = b * beatSec(); // seconds since transport start (position 0)
+      var delay = beatTime - posNow;
+      if (delay >= 0) {
+        tick(ctx, now + delay, accentForBeatIndex(b));
+      }
+      lastScheduledBeat = Math.max(lastScheduledBeat, b);
+    }
+    setTimeout(scheduleLoop, 50);
+  }
+
+  var posAtAudioTime = 0;
+  async function poll() {
+    try {
+      var r = await fetch(API);
+      var s = await r.json();
+      var wasPlaying = playing;
+      playing = !!s.playing;
+      bpm = (s.bpm > 0) ? s.bpm : 120;
+      position = s.position || 0;
+      countIn = s.countIn || null;
+      timeSig = s.timeSig || null;
+      // Anchor: the song's downbeat in seconds (region start). Valid when the
+      // runner publishes it and the transport is at/after the count-in.
+      if (typeof s.beatAnchorSec === "number" && s.beatAnchorSec >= 0) {
+        anchorSec = s.beatAnchorSec;
+        anchorValid = true;
+      } else {
+        anchorValid = false;
+      }
+      ensureCtx();
+      if (ctx && playing) posAtAudioTime = ctx.currentTime - (position * 1.0);
+      if (playing && !wasPlaying) { lastScheduledBeat = -1; }
+      if (playing) scheduleLoop();
+      // Bar/beat display uses the same anchored model as the accent.
+      var bpb = beatsPerBar();
+      var relBeats = anchorValid
+        ? (position - anchorSec) * bpm / 60
+        : (position * bpm / 60);
+      var bar = Math.floor(relBeats / bpb) + 1;
+      var beat = Math.floor(relBeats % bpb) + 1;
+      statusEl.textContent = playing ? "CLICK" : (countIn && countIn.active ? "COUNT-IN" : "READY");
+      statusEl.style.color = playing ? "#ffd24a" : (countIn && countIn.active ? "#7fd" : "#666");
+      barbeatEl.innerHTML = "Bar " + bar + " — Beat " + beat +
+        " <span style='color:#666'>" + (bpm) + " BPM</span>" +
+        "<br>" + [1,2,3,4].map(function(b){ return "<span class='dot' id='db"+b+"'></span>"; }).join("");
+      [1,2,3,4].forEach(function(b){
+        var el = document.getElementById("db" + b);
+        if (el) el.className = "dot" + (b === beat ? " on" : "");
+      });
+    } catch (e) {}
+    setTimeout(poll, 200);
+  }
+
+  poll();
+})();
+</script>
+</body>
+</html>

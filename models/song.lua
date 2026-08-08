@@ -14,6 +14,8 @@ function Song.new(overrides)
         title = "",
         artist = "",
         bpm = 0,
+        bpm_verified = false,
+        time_sig = { 4, 4 },
         key = "",
         snapshot_id = 0,
         duration_bars = 0,
@@ -52,6 +54,17 @@ function Song.fromMeta(id, folder, meta)
 
     if meta.bpm then
         song.bpm = meta.bpm
+    end
+
+    -- bpm_verified: true only when the tempo has a trusted source (LRCLIB-derived,
+    -- gpif, or human tap-verified). The runner refuses to push an unverified BPM
+    -- into REAPER's tempo (avoids stretching tempo-synced audio + wrong click).
+    if meta.bpm_verified ~= nil then
+        song.bpm_verified = meta.bpm_verified == true
+    end
+
+    if meta.time_sig then
+        song.time_sig = meta.time_sig
     end
 
     if meta.key then

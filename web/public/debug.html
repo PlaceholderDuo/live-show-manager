@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Show Debug — What Every System Sees</title>
+<style>
+  body{margin:0;background:#0b0e14;color:#e6ebf2;font-family:-apple-system,system-ui,sans-serif;}
+  header{padding:10px 16px;border-bottom:1px solid #232c3b;display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
+  .summary{font-weight:800;font-size:16px;}
+  .badge{padding:3px 12px;border-radius:20px;font-weight:700;font-size:12px;}
+  .badge.OK{background:#123524;color:#3ddc84;}
+  .badge.HAS-ERRORS{background:#3a1515;color:#e05252;}
+  .badge.WARNINGS{background:#3a2d15;color:#f0a03a;}
+  .autorefresh{color:#7a8698;font-size:11px;}
+  main{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;padding:12px;}
+  .panel{background:#141a24;border:1px solid #232c3b;border-radius:10px;padding:12px;}
+  .panel h3{margin:0 0 8px;font-size:11px;color:#7a8698;text-transform:uppercase;letter-spacing:.5px;}
+  .song-title{font-size:22px;font-weight:800;margin:4px 0;}
+  .song-sub{font-size:11px;color:#7a8698;}
+  .kv{display:flex;justify-content:space-between;font-size:12px;padding:1px 0;border-bottom:1px solid #1a2029;}
+  .kv span:first-child{color:#7a8698;}
+  .kv span:last-child{font-variant-numeric:tabular-nums;}
+  .check{padding:4px 8px;border-radius:5px;margin:2px 0;font-size:12px;}
+  .check.ERROR{background:#3a1515;color:#e05252;}
+  .check.WARN{background:#3a2d15;color:#f0a03a;}
+  .check.OK{background:#123524;color:#3ddc84;}
+  .check.INFO{background:#152030;color:#6a9fd8;}
+  .big{font-size:24px;font-weight:800;}
+  .dim{color:#7a8698;font-size:11px;}
+  .mismatch{background:#3a1515;border-left:3px solid #e05252;padding-left:8px;}
+  .match{background:#122013;border-left:3px solid #3ddc84;padding-left:8px;}
+  .idle{color:#5a6577;}
+  .playing{color:#3ddc84;font-weight:700;}
+  .stopped{color:#e05252;}
+  .armed{color:#f0a03a;font-weight:700;}
+  .staged{color:#6a9fd8;}
+  .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:6px;}
+  .match-strip{padding:2px 6px;border-radius:3px;font-size:10px;text-align:center;}
+  .match-strip.yes{background:#123524;color:#3ddc84;}
+  .match-strip.no{background:#3a1515;color:#e05252;}
+  .bar{background:#1a2029;border-radius:2px;height:4px;margin:4px 0;overflow:hidden;}
+  .bar-fill{height:100%;border-radius:2px;transition:width .3s;}
+</style>
+</head>
+<body>
+<header>
+  <span class="summary" id="summary">…</span>
+  <span class="badge" id="badge">—</span>
+  <span class="autorefresh">auto-refresh 2s</span>
+</header>
+<main id="main"></main>
+<script>
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function panel(title, cls, inner){return `<div class="panel${cls?" "+cls:""}"><h3>${esc(title)}</h3>${inner}</div>`;}
+function kv(obj){return Object.entries(obj||{}).map(([k,v])=>`<div class="kv"><span>${esc(k)}</span><span>${esc(typeof v==="object"?JSON.stringify(v):v)}</span></div>`).join("");}
+
+async function refresh(){
+  try{
+    const d=await (await fetch("/api/debug/snapshot")).json();
+    document.getElementById("summary").textContent=d.summary;
+    const b=document.getElementById("badge");
+    b.textContent=d.summary; b.className="badge "+d.summary.replace(/[ -]/g,"_");
+
+    let html="";
+    const br=d.bridge||{};
+    const si=d.singer||{};
+    const tu=d.tui||{};
+    const tuQ = (tu.queueState||{});
+    const tuR = (tu.reaperState||{});
+    const siSong = si.current_song||{};
+
+    // ─── TRANSPORT AUTHORITY ───
+    const brTitle = br.currentSong||"—";
+    const siTitle = siSong.title||"—";
+    const tuRTitle = tuR.currentSong||"—";
+    const tuQTitle = tuQ.current_song ? tuQ.current_song.title : "—";
+    const songsAgree = brTitle===siTitle && siTitle===tuRTitle;
+
+    html+=panel("TRANSPORT", songsAgree?"":"mismatch", `
+      <div class="three-col">
+        <div><span class="dim">BRIDGE</span><br><b>${esc(brTitle)}</b><br><span class="dim">${esc(br.songId||"—")}</span></div>
+        <div><span class="dim">SINGER</span><br><b>${esc(siTitle)}</b><br><span class="dim">status: ${esc(si.status||"—")}</span></div>
+        <div><span class="dim">TUI (reaperState)</span><br><b>${esc(tuRTitle)}</b><br><span class="dim">playing=${tuR.playing||false}</span></div>
+      </div>
+      <div class="three-col">
+        <div class="match-strip ${brTitle===tuRTitle?'yes':'no'}">bridge↔tui</div>
+        <div class="match-strip ${siTitle===tuQTitle?'yes':'no'}">singer↔tui-queue</div>
+        <div class="match-strip ${brTitle===siTitle?'yes':'no'}">bridge↔singer</div>
+      </div>
+      ${kv({playing:br.playing,paused:br.paused,armed:br.armed,stagedIndex:br.stagedIndex,position:Math.round(br.position*10)/10+"s",duration:Math.round(br.duration||0)+"s",bpm:br.bpm,songIndex:br.songIndex+"/"+br.totalSongs})}
+      ${br.countIn&&br.countIn.active?`<div class="check WARN">COUNT-IN: ${br.countIn.beats} beats @ ${br.countIn.bpm} BPM</div>`:""}
+      ${br.armed&&!br.playing?`<div class="check OK">ARMED — staged=${br.stagedIndex}, ready for PLAY</div>`:""}
+    `);
+
+    // ─── TUI INTERNAL STATE ───
+    html+=panel("TUI STATE", "", `
+      ${kv({age:(tu.ageMs?Math.round(tu.ageMs/100)/10+"s ago":"never"),focus:tu.focus,queueView:tu.queueView,showMode:tu.showMode,hudReaperPlaying:tu.hudReaperPlaying})}
+      <div style="margin-top:8px;font-size:11px;">
+        <div class="kv"><span>band_queue (N songs)</span><span>${esc(tuQ.band_len||0)}</span></div>
+        <div class="kv"><span>main_queue (N songs)</span><span>${esc(tuQ.main_len||0)}</span></div>
+        <div class="kv"><span>queue status</span><span class="${tuQ.status==='playing'?'playing':tuQ.status==='loaded'?'armed':'stopped'}">${esc(tuQ.status||"—")}</span></div>
+        <div class="kv"><span>current_index</span><span>${esc(tuQ.current_index!=null?tuQ.current_index:"—")}</span></div>
+      </div>
+      ${(tuQ.band_queue||[]).length?`<div style="font-size:11px;margin-top:6px;color:#7a8698;">Band set: ${(tuQ.band_queue||[]).map((s,i)=>`${i+1}.${esc(s.title)}`).join(" → ")}</div>`:""}
+    `);
+
+    // ─── SONG DATA ───
+    const s=d.song||{};
+    if(s.chopro){
+      const c=s.chopro;
+      html+=panel("LYRIC WINDOW ("+esc(s.folder||s.id)+")"+c.estimated?"":"", c.estimated?"mismatch":"", `
+        ${kv({timed:c.timedLines+"/"+c.totalLines,lastTime:c.lastTime+"s",monotonic:c.monotonic,estimated:c.estimated,currentLineIdx:c.currentLineIdx})}
+        <div style="margin-top:6px;font-size:13px;color:#3ddc84;font-weight:600;">NOW: ${esc(c.currentLine||"—")}</div>
+        ${(c.nextLines||[]).map(n=>`<div style="font-size:12px;color:#7a8698;margin:2px 0;">→ ${esc(n.text)} <span class="dim">${Math.round(n.time)}s</span></div>`).join("")}
+        <div class="bar"><div class="bar-fill" style="width:${Math.min(100,Math.round(c.lastTime/state_position*100))}%;background:#3ddc84"></div></div>
+      `);
+    }
+    if(s.integrity){
+      html+=panel("SONG INTEGRITY", "", kv(s.integrity));
+    }
+
+    // ─── CHECKS ───
+    if(d.checks&&d.checks.length){
+      const errs=d.checks.filter(c=>c.level==="ERROR").length;
+      const warns=d.checks.filter(c=>c.level==="WARN").length;
+      const oks=d.checks.filter(c=>c.level==="OK").length;
+      html+=panel(`CHECKS (${errs} errors, ${warns} warnings, ${oks} ok)`, "", d.checks.map(c=>`<div class="check ${c.level}">${esc(c.msg)}</div>`).join(""));
+    }
+
+    document.getElementById("main").innerHTML=html;
+  }catch(e){
+    document.getElementById("summary").textContent="Error: "+e.message;
+  }
+}
+refresh();
+setInterval(refresh,2000);
+</script>
+</body>
+</html>
