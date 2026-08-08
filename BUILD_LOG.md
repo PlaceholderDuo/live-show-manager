@@ -1859,3 +1859,30 @@ The `reaper/` library metadata also changed (90+ chopro files, meta.json updates
 
 ### Verified
 - Metadata 2x, ring absent, start_song count-in holds position, 27/27 tests pass.
+
+## 2026-08-08 (Late night cont.): HUD metadata 3x, chord display fixed, chord color mode circle
+
+### Metadata scaling (verified @1920x1080)
+- SONG / KEY / BPM rows: `3.75rem` (3× the original 1.25rem) → 60px at scale 1.0
+- NEXT row: `1.875rem` (1.5×) → 30px, via new `.meta-row-next` class
+- Both `@media (max-height:700px)` and `@media (max-width:900px)` overrides updated
+  proportionally (NEXT half of the rows) so it never inverts on small screens.
+- The apparent "inversion" in headless testing was a 600px-viewport artifact; at real
+  1080p the sizes read 60px / 60px / 60px / 30px.
+
+### Chords "went away" — root cause
+- The config had `chord_color_mode: "flavor"` (all major chords yellow), making chords
+  indistinguishable → looked "gone". Set back to `circle` mode (per-root Circle-of-5ths
+  colors). Verified: F=green, C=red, Eb=orange, G=blue.
+- Also removed the `[...]` brackets around chord names: chords now render as clean
+  colored root notes (matching STAGE-HUD-SPEC) instead of `[F]` bracketed markup.
+
+### "Flashing connected dot" — answered
+- The flashing green dot is the **metronome beat indicator** (`#metronodeDot`, bottom
+  right) which pulses on every beat (80ms flash) — intentional, synced to the click.
+  The top-right `#connectionStatus` is static text, no flash. Both OK as-is.
+
+### Verified
+- Full HUD render @1920x1080: metadata 3x/1.5x, clean colored chords, zero page errors.
+- `npm test`: 27/27 pass.
+- Pushed live-stage-hud to GitHub `main`.
