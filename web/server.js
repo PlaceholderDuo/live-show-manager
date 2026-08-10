@@ -50,6 +50,7 @@ const path = require("path");
 const fs = require("fs");
 const cp = require("child_process");
 const Timing = require("./public/timing.js");
+const MidiClock = require("./midi-clock.js");
 
 // ═══════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -270,6 +271,69 @@ try {
 } catch (err) {
   console.warn("[MIDI In] Could not create input:", err.message);
 }
+
+// ═══════════════════════════════════════════════════════════
+// FORCE MIDI CLOCK (Akai Force = MASTER CLOCK)
+// ═══════════════════════════════════════════════════════════
+// The Force owns the beat. Its click goes to the IEM mixer via its
+// own AUX output (never crosses the network). Here we read the Force's
+// MIDI real-time clock (USB MIDI, or DIN via M-Track Plus) so the
+// teleprompter + beat display follow the click the singer hears.
+//
+// When the Force is connected and sending clock:
+//   - state.tempo.source becomes "midi"
+//   - state.bpm follows the Force's derived tempo
+//   - state.tempo.downbeatAt tracks the Force's Beat-1 (HUD/click anchor)
+//   - state.position advances from the Force's transport start
+// When the Force is absent, the existing REAPER/local/tap paths remain.
+let forceClock = null;
+let forceClockBroadcast = 0;
+
+function initForceClock() {
+  try {
+    forceClock = new MidiClock();
+    forceClock.onState((m) => {
+      if (!m) return;
+      // Only take over when the Force is actively sending clock.
+      if (m.playing) {
+        state.playing = true;
+        state.bpm = m.bpm || state.bpm;
+        state.tempo.bpm = state.bpm;
+        state.tempo.source = "midi";
+        state.tempo.ts = Date.now();
+        if (m.downbeatAt) {
+          state.tempo.downbeatAt = m.downbeatAt;
+          state.tempo.downbeatRev = m.downbeatRev || 0;
+        }
+        if (m.positionSec !== undefined) state.position = m.positionSec;
+        // For the Force path, song position 0 IS the transport start. The
+        // click.html beatAnchorSec is a song-relative region start (seconds
+        // within the song), so it stays 0 here — the absolute-beat fallback
+        // (position * bpm / 60) is correct for a master-clock transport.
+        state.beatAnchorSec = 0;
+        // Throttle broadcasts to ~10Hz to avoid flooding the socket.
+        const now = Date.now();
+        if (now - forceClockBroadcast > 100) {
+          forceClockBroadcast = now;
+          computeCurrentLyricLine();
+          broadcastState();
+        }
+      } else if (m.playing === false && state.tempo.source === "midi") {
+        // Only report STOP if the Force was already the active source —
+        // otherwise this initial no-port/no-clock state would clobber the
+        // default "reaper" source on every boot.
+        state.playing = false;
+        broadcastState();
+      }
+    });
+    forceClock.start();
+  } catch (err) {
+    console.warn("[ForceClock] Init failed:", err.message);
+    forceClock = null;
+  }
+}
+// Initialize once the express app exists but only after the socket server
+// is available — broadcastState uses io, so defer until server.listen.
 
 // Alesis V25 knob CC assignments (configure on V25 hardware)
 const ALESIS_CC = { 1: 70, 2: 71, 3: 72, 4: 73 };
@@ -2888,6 +2952,9 @@ server.listen(PORT, "0.0.0.0", () => {
   loadSessionSetlist();
   ensureSongLibrary();
 
+  // Init Force MIDI clock (master clock sync)
+  initForceClock();
+
   // Register Bonjour service so iOS can discover via mDNS hostname resolution
   let bonjourSvc = null;
   try {
@@ -2897,9 +2964,10 @@ server.listen(PORT, "0.0.0.0", () => {
       "-R", hostname, "_http._tcp", ".", String(PORT)
     ], { stdio: ["ignore", "ignore", "ignore"], detached: false });
     bonjourSvc.unref();
-    process.on("exit", () => { try { bumperStop(); midiIn && midiIn.close(); bonjourSvc.kill(); } catch {} });
-    process.on("SIGINT", () => { try { bumperStop(); midiIn && midiIn.close(); bonjourSvc.kill(); } catch {} });
-    process.on("SIGTERM", () => { try { bumperStop(); midiIn && midiIn.close(); bonjourSvc.kill(); } catch {} });
+    const cleanup = () => { try { bumperStop(); midiIn && midiIn.close(); forceClock && forceClock.stop(); bonjourSvc && bonjourSvc.kill(); } catch {} };
+    process.on("exit", cleanup);
+    process.on("SIGINT", cleanup);
+    process.on("SIGTERM", cleanup);
   } catch (err) {
     // dns-sd may not be available — skip
   }
