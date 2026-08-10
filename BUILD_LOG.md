@@ -2016,3 +2016,91 @@ The `reaper/` library metadata also changed (90+ chopro files, meta.json updates
 - Full HUD render @1920x1080: metadata 3x/1.5x, clean colored chords, zero page errors.
 - `npm test`: 27/27 pass.
 - Pushed live-stage-hud to GitHub `main`.
+
+---
+
+## 2026-08-10 — V2: Akai Force as Master Clock via MIDI Real-Time Clock (USB or DIN via M-Track Plus)
+
+### The problem (post-show 2026-08-08)
+
+Danny's #1 pain: no click in the IEMs → the band drifted off-tempo and he had to rewind/skip lyrics. Latency of a network-sent click is unacceptable. The clock architecture decision (recorded in live-stage-hud Session 8):
+
+```
+Akai Force = MASTER CLOCK
+  ├── AUX out → IEM mixer        ← the click Danny HEARS (sample-accurate, zero network latency)
+  └── MIDI clock → Show Manager  ← display-only tempo/downbeat sync for the teleprompter/HUD
+```
+
+- Reaper = guitar signal chain ONLY. Not in the tempo path (may gain time-based features later — out of scope).
+- The audible click never crosses the network; only display sync does, and that tolerates ms of jitter.
+
+### Why MIDI clock (not Ableton Link, not network click)
+
+- Link over WiFi was the "recommended end-state" in the docs, but USB MIDI with the Force was already attempted and failed. For V2 we made the Force's MIDI real-time clock the transport — it works over **USB MIDI** (preferred) or a **physical DIN cable Force → M-Track Plus MIDI port** (fallback).
+- The Force's own AUX output still carries the audible click to the IEMs. The Show Manager only reads tempo + beat phase.
+
+### What was built
+
+New `web/midi-clock.js` (Live Show Manager) — a MIDI real-time clock reader:
+
+| Signal | MIDI msg | Handling |
+|--------|----------|----------|
+| START / CONTINUE | 0xFA / 0xFB | `playing=true`, position=0, downbeat anchored |
+| STOP | 0xFC | `playing=false` |
+| CLOCK | 0xF8 | BPM from inter-tick interval (24 PPQN, smoothed); position advances; beat-1 re-anchored each measure (4/4 grid) |
+| SONG POSITION | 0xF2 | jump transport position (16th notes → beats → seconds) |
+
+- **Clock-stall watchdog** — if ticks stop for >1.5s (USB pulled, cable snag, Force powered down) the transport flips to stopped so the HUD/click don't run on stale beats.
+- **Port auto-discovery** — explicit `port` in `data/midi-clock.json`, else alias match (Force / M-Track / Midi / Akai), else first available non-virtual input. **Re-scans every 5s** so a Force powered on after the bridge still auto-connects.
+
+Server wiring (`server.js`):
+- On Force playing → `state.tempo.source = "midi"`, `state.bpm` follows the Force, `downbeatAt`/`downbeatRev` updated (this is what the HUD beat display anchors to), `position` advances, broadcasts ~10Hz.
+- Force is authoritative while sending clock — re-asserts `source="midi"` even if a song-load momentarily reset it to `"reaper"` (the master clock always wins).
+- `beatAnchorSec` stays 0 on the Force path (position 0 IS transport start; click.html's absolute-beat fallback is correct).
+- Clean shutdown in the launchd cleanup handler.
+
+HUD (`live-stage-hud/web/public/hud.js`):
+- `updateConductor` now treats `tempo.source === "midi"` the same as `"tap"` — the beat/bar display derives from the shared `downbeatAt` wall-clock anchor so the HUD beats lock to the Force's click.
+
+### Verified (headless, virtual 'Akai Force' MIDI port)
+
+- Bridge discovers the Force at boot (or via 5s rescan if the Force connects later).
+- START + clock → `source=midi`, `playing=true`, BPM derived (~114-119 from a 120 sim, 1% jitter expected), position advances, `downbeatRev` increments per bar.
+- Clock stall → `playing=false` within ~1.5s.
+- Song load while Force driving → source re-asserts to `midi` immediately.
+- HUD beat display advances with the Force (bar counter + active beat cycling).
+- `npm test`: 27/27 pass.
+
+### Config
+
+`data/midi-clock.json`:
+```json
+{ "enabled": true, "port": "" }
+```
+- `port: ""` → auto-discover (alias match first, then first available).
+- Set `port` to a specific device name to force it.
+
+### At the rig (gig checklist)
+
+1. Force MIDI OUT → Mac USB (or → M-Track Plus MIDI IN if USB fails).
+2. Force AUX OUT → IEM mixer (the click you hear).
+3. Force clock preferences: MIDI Sync = ON, and it should send START/STOP.
+4. Start the bridge → it auto-finds the Force port.
+5. Press play on the Force → teleprompter/HUD lock to the Force's beat.
+6. TUI/`POST /api/tempo {bpm, source:"link"}` still work for manual override if the Force is absent.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `Live Show Manager/web/midi-clock.js` | NEW — Force MIDI clock reader (start/stop/clock/position, BPM+downbeat derivation, stall watchdog, port rescan) |
+| `Live Show Manager/web/server.js` | Force clock wiring → state.tempo (source midi, downbeatAt/Rev, position), ~10Hz broadcast, cleanup |
+| `Live Show Manager/data/midi-clock.json` | NEW — `{ enabled, port }` config |
+| `live-stage-hud/web/public/hud.js` | `updateConductor` anchors beats to `downbeatAt` when `source === "midi"` |
+
+### Rollback
+
+This is on top of the `show-2026-08-08` tags. To return to the last-gig state:
+```bash
+git reset --hard show-2026-08-08   # in each repo
+```
