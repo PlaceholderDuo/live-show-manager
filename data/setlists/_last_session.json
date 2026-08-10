@@ -2,20 +2,20 @@
   "name": "_last_session",
   "songs": [
     {
-      "id": "after_midnight",
-      "folder": "After Midnight",
-      "title": "After Midnight",
-      "artist": "Eric Clapton",
-      "bpm": 131.6
+      "id": "brown_eyed_girl",
+      "folder": "Brown Eyed Girl",
+      "title": "Brown Eyed Girl",
+      "artist": "Van Morrison",
+      "bpm": 79.7
     },
     {
-      "id": "a_boy_named_sue",
-      "folder": "A Boy Named Sue",
-      "title": "A Boy Named Sue",
-      "artist": "Johnny Cash",
-      "bpm": 96.9
+      "id": "i_can_t_get_no_satisfaction",
+      "folder": "(I Can't Get No) Satisfaction",
+      "title": "(I Can't Get No) Satisfaction",
+      "artist": "The Rolling Stones",
+      "bpm": 70.7
     }
   ],
-  "savedAt": "2026-08-08T21:43:46.040Z",
+  "savedAt": "2026-08-10T15:24:19.278Z",
   "autoSaved": true
 }

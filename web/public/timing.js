@@ -189,6 +189,22 @@
     // A song whose lyrics run past a plausible end is mis-timed (wrong BPM).
     if (lastResolved > MAX_END) estimated = true;
 
+    // Drop local forward spikes (a single line whose time is higher than subsequent valid times)
+    for (var sp = 0; sp < lines.length - 1; sp++) {
+      if (lines[sp].time !== null) {
+        var nextValidTime = null;
+        for (var nxt = sp + 1; nxt < lines.length; nxt++) {
+          if (lines[nxt].time !== null) {
+            nextValidTime = lines[nxt].time;
+            break;
+          }
+        }
+        if (nextValidTime !== null && lines[sp].time > nextValidTime + 5) {
+          lines[sp].time = null; // drop forward spike
+        }
+      }
+    }
+
     // Enforce monotonic non-decreasing times.
     var runMax = -Infinity;
     for (var k = 0; k < lines.length; k++) {

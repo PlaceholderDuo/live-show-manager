@@ -376,7 +376,10 @@ function parseChoproDirectiveSections(text) {
 
   function flushSection() {
     if (!inSection) return;
-    sections.push({ type: currentType, label: currentLabel, lines: currentLines, raw: currentRaw });
+    // Only keep sections that contain actual content lines
+    if (currentLines.filter(l => l && !l.startsWith("{")).length > 0) {
+      sections.push({ type: currentType, label: currentLabel, lines: currentLines, raw: currentRaw });
+    }
     currentLines = [];
     currentRaw = [];
     inSection = false;
@@ -688,7 +691,69 @@ function computeSections(bpm, lyrics, choproText, durationBars) {
     });
   }
 
-  return sections;
+  return normalizeSections(sections, totalBars, bpm);
+}
+
+// Subdivides sparse sections or collapses overlapping sections so the Metro Map timeline is clean and useful
+function normalizeSections(rawSections, totalBars, bpm) {
+  if (!totalBars || totalBars <= 0) totalBars = 128;
+  if (!bpm || bpm <= 0) bpm = 120;
+  if (!rawSections || rawSections.length === 0) {
+    rawSections = [{ bar: 1, text: "Verse", type: "verse", token: "[V1]", time: 0 }];
+  }
+
+  // 1. Remove adjacent duplicate-type sections or sections closer than 8 bars apart
+  const filtered = [];
+  for (let i = 0; i < rawSections.length; i++) {
+    const sec = rawSections[i];
+    const nextBar = (i + 1 < rawSections.length) ? rawSections[i + 1].bar : totalBars;
+    const span = nextBar - sec.bar;
+    if (span >= 8 || filtered.length === 0) {
+      filtered.push(sec);
+    }
+  }
+
+  // 2. Subdivide long spans (> 32 bars) into 16-bar section blocks
+  const result = [];
+  let vC = 0, cC = 0, bC = 0, sC = 0;
+  for (let i = 0; i < filtered.length; i++) {
+    const sec = filtered[i];
+    const nextBar = (i + 1 < filtered.length) ? filtered[i + 1].bar : totalBars;
+    const span = nextBar - sec.bar;
+
+    result.push(sec);
+
+    if (span > 32) {
+      let currentBar = sec.bar + 16;
+      while (currentBar <= nextBar - 12) {
+        let subType = sec.type === "chorus" ? "verse" : "chorus";
+        if (result.length % 3 === 0) subType = "bridge";
+
+        const time = ((currentBar - 1) * 4 * 60) / bpm;
+        result.push({
+          bar: currentBar,
+          time: Math.round(time * 100) / 100,
+          text: subType,
+          type: subType,
+          token: ""
+        });
+        currentBar += 16;
+      }
+    }
+  }
+
+  // 3. Reassign unique tokens to all sections
+  vC = 0; cC = 0; bC = 0; sC = 0;
+  for (const sec of result) {
+    const t = sec.type || "verse";
+    if (t === "verse") { vC++; sec.token = "[V" + vC + "]"; }
+    else if (t === "chorus") { cC++; sec.token = "[C" + cC + "]"; }
+    else if (t === "bridge") { bC++; sec.token = "[B" + bC + "]"; }
+    else if (t === "solo") { sC++; sec.token = "[S" + sC + "]"; }
+    else { sec.token = "[" + t.charAt(0).toUpperCase() + (result.indexOf(sec) + 1) + "]"; }
+  }
+
+  return result;
 }
 
 // Generate sections directly from ChordPro directive sections when meta is sparse.
@@ -733,7 +798,7 @@ function sectionsFromChordpro(choproSections, bpm, lyrics, durationBars) {
     currentBar = currentBar + 1;
   }
 
-  return sections;
+  return normalizeSections(sections, totalBars, bpm);
 }
 
 // Resolve meta.json path with slug fallback (folder may not match songId)
