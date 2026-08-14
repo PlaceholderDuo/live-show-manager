@@ -2104,3 +2104,68 @@ This is on top of the `show-2026-08-08` tags. To return to the last-gig state:
 ```bash
 git reset --hard show-2026-08-08   # in each repo
 ```
+
+---
+
+## 2026-08-14 (Session 9) — Rig wiring status + V25→Force control path + Mod-Wheel Middleman decision
+
+### The update (physical rig)
+
+- MIDI now flows **Mac → Force** over a single 5-pin DIN cable:
+  `Mac → M-Track Plus (USB) → M-Track DIN OUT → cable → Force MIDI IN`.
+- **Force → Mac is NOT connected yet** (no return cable). The clock reader
+  (`web/midi-clock.js`, built 2026-08-10) is fully built and waiting — this is a
+  purely physical blocker, no code change needed.
+- The **Alesis V25** (USB → Mac) now controls the Force: its zones route through
+  the Mac to the Force — **keys on channel 1, knobs on channel 3**. Works, with
+  slight latency from the USB→DIN chain.
+
+### Decision locked: the Mac is the mod-wheel MIDDLEMAN (required, not optional)
+
+- Goal: the V25 mod wheel drives a Force control.
+- Problem: the Force's MIDI mapping/learn **cannot map a mod wheel (CC1)** to a
+  control — it refuses the assignment. Mod wheel is not mappable to "anything"
+  on the Force.
+- Therefore the Mac **must** sit in the V25→Force path as a **MIDI middleman**
+  that transforms mod-wheel CC1 → a CC the Force *can* learn.
+- Consequence: the "direct" V25 USB → Force topology is **off the table for V2**.
+  The slight-latency Mac-routed path is accepted and permanent for control in V2.
+- New software item to build (pending): a **CC1 → CCn transformer** in the Show
+  Manager's MIDI layer (easymidi already present) so the mod wheel arrives at
+  the Force as a learnable controller.
+
+### Clock sync status (code done, physical blocker only)
+
+- `web/midi-clock.js` + server wiring already built (2026-08-10): port
+  auto-discovery (alias match Force / M-Track / Akai, 5s rescan), 24-PPQN BPM
+  derivation, beat-1 downbeat anchoring, 1.5s clock-stall watchdog,
+  `source="midi"` takeover of `state.tempo`.
+- Verified headless against a virtual 'Akai Force' port; `npm test` 27/27 pass.
+- Waiting on: a **2nd DIN cable** `Force MIDI OUT → M-Track DIN IN` (clock
+  direction). The USB option was previously tried and failed (2026-08-10).
+- Force config to set when the clock cable lands:
+  **Force → MIDI Sync → Clock Out = ON** on the DIN port.
+
+### End-state topology (2 DIN cables)
+
+```
+V25 ──USB──▶ Mac ──USB──▶ M-Track Plus
+                           ├── DIN OUT ──cable 1──▶ Force MIDI IN   (V25 keys/knobs/mod-wheel, post-transform)
+                           └── DIN IN  ──cable 2──◀ Force MIDI OUT  (Force real-time clock → Show Manager)
+Force ──AUX──▶ IEM mixer   ← the click you hear (never crosses the network)
+```
+
+### Todo / next
+
+1. [ ] 2nd DIN cable: `Force MIDI OUT → M-Track DIN IN` → live Force clock.
+2. [ ] Force: enable Clock Out on DIN.
+3. [ ] Build the mod-wheel transformer (CC1 → Force-learnable CC) in the Show
+      Manager MIDI layer.
+4. [ ] Verify on the rig: mod wheel drives the target Force control; teleprompter
+      beat locks to the Force clock.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `Live Show Manager/BUILD_LOG.md` | This entry — no code changes this session (decision/status only) |
