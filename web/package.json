@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/transport.test.js tests/integration.test.js tests/browser.test.js",
+    "test": "node --test --test-concurrency=1 tests/transport.test.js tests/integration.test.js tests/browser.test.js",
     "test:show-ready": "node tools/test-show-ready.js"
   },
   "dependencies": {

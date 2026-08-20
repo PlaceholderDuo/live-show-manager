@@ -243,6 +243,21 @@ function Runner._controlCheck(self)
     Runner._cmdPlay(self)
   elseif cmd == "stop" then
     Runner._cmdStop(self)
+  elseif cmd == "seek" then
+    local target = tonumber(data.position)
+    if not target then
+      target = (self.position or 0) + (tonumber(data.offset) or 0)
+    end
+    target = math.max(0, target)
+    if self.duration and self.duration > 0 then
+      target = math.min(target, self.duration)
+    end
+    self.position = target
+    if self.playing then
+      local now = (reaper and reaper.time_precise and reaper.time_precise()) or 0
+      self._playStartTime = now - target
+    end
+    Util.log("[Control] Seek → " .. string.format("%.2f", target) .. "s")
   elseif cmd == "stage" then
     if data.index and data.index > 0 then
       Runner._stageIndex(self, data.index)

@@ -213,6 +213,37 @@
       runMax = lines[k].time;
     }
 
+    // Give unannotated lyric lines stable positions between their nearest
+    // timed anchors. The HUD and line-skip controls both need every lyric line
+    // to have a usable time, while `estimated` preserves sync-health reporting.
+    var known = [];
+    for (var q = 0; q < lines.length; q++) {
+      if (lines[q].time !== null && lines[q].time !== undefined) known.push(q);
+    }
+    for (var g = 0; g < known.length - 1; g++) {
+      var first = known[g];
+      var last = known[g + 1];
+      var gap = last - first - 1;
+      for (var gi = 1; gi <= gap; gi++) {
+        var gapIdx = first + gi;
+        lines[gapIdx].time = Math.round((lines[first].time
+          + ((lines[last].time - lines[first].time) * gi / (gap + 1))) * 100) / 100;
+        lines[gapIdx].estimated = true;
+      }
+    }
+    if (known.length > 0) {
+      var firstIdx = known[0];
+      for (var before = firstIdx - 1; before >= 0; before--) {
+        lines[before].time = Math.max(0, Math.round((lines[before + 1].time - 2) * 100) / 100);
+        lines[before].estimated = true;
+      }
+      var lastIdx = known[known.length - 1];
+      for (var after = lastIdx + 1; after < lines.length; after++) {
+        lines[after].time = Math.round((lines[after - 1].time + 2) * 100) / 100;
+        lines[after].estimated = true;
+      }
+    }
+
     return { lines: lines, bpm: meta, maxBar: maxBar, estimated: estimated };
   }
 

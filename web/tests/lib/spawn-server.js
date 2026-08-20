@@ -29,6 +29,7 @@ async function spawnServer(opts = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lsm-test-"));
   const bridgePath = path.join(tmpDir, "bridge_state.json");
   const setlistPath = path.join(tmpDir, "_last_session.json");
+  const controlPath = path.join(tmpDir, "control_command.json");
   // Create the temp setlists dir so the server doesn't write to production
   fs.mkdirSync(path.join(tmpDir, "setlists"), { recursive: true });
 
@@ -42,7 +43,7 @@ async function spawnServer(opts = {}) {
     "--oscIn", String(oscIn),
     "--oscOut", String(oscOut)
   ], {
-    env: { ...process.env, BRIDGE_STATE_PATH: bridgePath, SESSION_SETLIST_PATH: setlistPath },
+    env: { ...process.env, BRIDGE_STATE_PATH: bridgePath, SESSION_SETLIST_PATH: setlistPath, CONTROL_COMMAND_PATH: controlPath },
     stdio: ["ignore", "pipe", "pipe"]
   });
 
@@ -64,6 +65,7 @@ async function spawnServer(opts = {}) {
     apiPort,
     baseUrl,
     bridgePath,
+    controlPath,
     proc,
     log,
     readLog() {

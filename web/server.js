@@ -797,6 +797,7 @@ function extractLyricLines(choproText, metaBpm, durationHint) {
       bar: ln.bar !== null && ln.bar !== undefined ? ln.bar : null,
       text: ln.text,
       type: ln.type === "solo" ? "solo" : "lyric",
+      estimated: !!ln.estimated,
     });
   }
   out.estimated = !!r.estimated;
@@ -1529,7 +1530,9 @@ function processSongData(songId) {
 
         // Compute lyric sync health
         var totalLyricLines = state.lyricLines.length;
-        var annotatedLyricLines = state.lyricLines.filter(function (l) { return (l.time !== null && l.time !== undefined) || (l.bar !== null && l.bar !== undefined); }).length;
+        var annotatedLyricLines = state.lyricLines.filter(function (l) {
+          return !l.estimated && ((l.time !== null && l.time !== undefined) || (l.bar !== null && l.bar !== undefined));
+        }).length;
         var annotatedPct = totalLyricLines > 0 ? Math.round((annotatedLyricLines / totalLyricLines) * 100) : 100;
         var syncWarnings = [];
         if (state.lyricLines.estimated) {
@@ -1850,7 +1853,9 @@ function pollLuaState() {
                 if (meta.lyrics && meta.bpm) {
                   state.lyricLines = extractLyricLines(choproText, meta.bpm, meta.lrc_duration_sec);
                   var totalLyricLines = state.lyricLines.length;
-                  var annotatedLyricLines = state.lyricLines.filter(function (l) { return (l.time !== null && l.time !== undefined) || (l.bar !== null && l.bar !== undefined); }).length;
+                  var annotatedLyricLines = state.lyricLines.filter(function (l) {
+                    return !l.estimated && ((l.time !== null && l.time !== undefined) || (l.bar !== null && l.bar !== undefined));
+                  }).length;
                   var annotatedPct = totalLyricLines > 0 ? Math.round((annotatedLyricLines / totalLyricLines) * 100) : 100;
                   var syncWarnings = [];
                   if (state.lyricLines.estimated) {
@@ -1950,10 +1955,7 @@ io.on("connection", (socket) => {
         controlStop();
         break;
       case "seek":
-        // Nudge position by offset seconds (local mode only)
-        if (!state.connected) {
-          localSeekOffset(parseFloat(value && value.offset) || 0);
-        }
+        requestSeek(value || {});
         break;
       case "prev":
       case "next": {
@@ -2464,7 +2466,7 @@ function isReaperActive() {
 // When REAPER is connected the runner owns the real transport; the server just
 // forwards commands via control_command.json. When REAPER is offline we fall
 // back to the local rehearsal sim, but PLAY is still gated on `armed`.
-const CONTROL_PATH = path.join(__dirname, "..", "data", "control_command.json");
+const CONTROL_PATH = process.env.CONTROL_COMMAND_PATH || path.join(__dirname, "..", "data", "control_command.json");
 
 function writeControl(cmd, extra) {
   try {
@@ -2472,6 +2474,28 @@ function writeControl(cmd, extra) {
   } catch (err) {
     console.warn("[Control] Could not write command file:", err.message);
   }
+}
+
+function requestSeek(value) {
+  const offset = Number(value && value.offset);
+  const requestedTarget = Number(value && value.target);
+  const current = Number(state.position || 0);
+  const rawTarget = Number.isFinite(requestedTarget)
+    ? requestedTarget
+    : current + (Number.isFinite(offset) ? offset : 0);
+  const target = Math.max(0, Math.min(rawTarget, state.duration || Infinity));
+
+  if (state.connected || isReaperActive()) {
+    // Optimistically publish so the phone and HUD respond on the button press;
+    // the runner immediately confirms the same target through bridge_state.json.
+    state.position = target;
+    writeControl("seek", { position: target });
+    broadcastState();
+    return { ok: true, position: target, playing: state.playing };
+  }
+
+  localSeekOffset(target - current);
+  return { ok: true, position: state.position, playing: state.playing };
 }
 
 async function syncBandSetToSinger() {
@@ -2614,9 +2638,7 @@ app.post("/api/local/pause", (req, res) => {
   res.json({ ok: true, playing: false, position: state.position });
 });
 app.post("/api/local/seek", (req, res) => {
-  const offset = parseFloat(req.body && req.body.offset) || 0;
-  localSeekOffset(offset);
-  res.json({ ok: true, position: state.position, playing: state.playing });
+  res.json(requestSeek(req.body || {}));
 });
 app.post("/api/local/jump", (req, res) => {
   const idx = req.body && req.body.songIndex;

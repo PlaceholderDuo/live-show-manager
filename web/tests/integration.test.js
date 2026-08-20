@@ -283,3 +283,55 @@ test("countIn: bridge publishes countIn → server broadcasts correctly", async 
   assert.equal(st.countIn.songId, "gravity");
   assert.ok(st.beatAnchorSec > 0);
 });
+
+// ── 13. SEEK PROPAGATION (live + local) ──
+
+test("seek: bridge-active seek is optimistically broadcast and forwarded to the runner", async () => {
+  const mt2 = MockTransport.create(srv.bridgePath);
+  mt2.set({ playing: true, position: 30, bpm: 120, songId: "gravity", currentSong: "Gravity", songIndex: 1, totalSongs: 1 });
+
+  await waitForState((s) => s.playing === true && s.position >= 30, 4000, "bridge active");
+  const fs = require("fs");
+  try { fs.rmSync(srv.controlPath, { force: true }); } catch (_) {}
+
+  const r = await api("/api/local/seek", "POST", { target: 45 });
+  assert.equal(r.ok, true);
+  assert.equal(r.position, 45, "seek target applied immediately");
+
+  // The runner control file carries the absolute target.
+  const deadline = Date.now() + 3000;
+  let cmd = null;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(srv.controlPath)) {
+      try { cmd = JSON.parse(fs.readFileSync(srv.controlPath, "utf-8")); break; }
+      catch (_) {}
+    }
+    await sleep(120);
+  }
+  assert.ok(cmd, "control command written");
+  assert.equal(cmd.cmd, "seek");
+  assert.equal(cmd.position, 45);
+  mt2.close();
+});
+
+test("seek: local-mode absolute target moves position and reverses offsets", async () => {
+  // Stop the mock transport cleanly, then let its bridge file age out so the
+  // server falls back to the local rehearsal engine (which owns "seek").
+  mt.set({ playing: false, position: 30, songId: "gravity", currentSong: "Gravity" });
+  await waitForState((s) => s.playing === false, 4000, "stopped");
+  mt.close();
+  const staleDeadline = Date.now() + 7000;
+  while (Date.now() < staleDeadline) {
+    const st = await getState();
+    if (!st.connected) break;
+    await sleep(300);
+  }
+  assert.equal((await getState()).connected, false, "bridge went stale → local mode");
+
+  const adv = await api("/api/local/seek", "POST", { offset: 2 });
+  assert.equal(adv.ok, true);
+  assert.ok(adv.position > 30, `offset advanced past baseline 30 (got ${adv.position})`);
+
+  const back = await api("/api/local/seek", "POST", { target: 1 });
+  assert.equal(back.position, 1, "absolute target supersedes prior offset");
+});
