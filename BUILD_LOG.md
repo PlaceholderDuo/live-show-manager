@@ -2169,3 +2169,61 @@ Force ──AUX──▶ IEM mixer   ← the click you hear (never crosses the n
 | File | Changes |
 |------|---------|
 | `Live Show Manager/BUILD_LOG.md` | This entry — no code changes this session (decision/status only) |
+
+---
+
+## 2026-08-15 (Session 10) — Mac→Force transport (MIDI Start/Stop) 🟢
+
+### Context
+The 2nd DIN cable (Force MIDI OUT → M-Track IN, the clock direction) is unavailable
+tonight, and the Force does NOT enumerate as USB MIDI (confirmed by `ioreg` — no
+Akai/InMusic device even after a direct-cable reboot). Rather than block on tempo
+sync, we inverted the direction: keep the single cable on the **control** path
+(M-Track DIN OUT → Force MIDI IN) and send **transport** commands to the Force.
+
+### What was built
+- **`web/server.js`** — `forceTransport(action)` + edge detection in
+  `broadcastState()`:
+  - On any `state.playing` **true edge** (local, REAPER bridge, OSC, or WS source)
+    → send MIDI `start` (0xFA) to the M-Track output.
+  - On any **false edge** → send MIDI `stop` (0xFC).
+  - Lazy-connects to the first output matching `m-track|force|akai`; no-op with a
+    warn if absent.
+  - **Guard:** skipped when `state.tempo.source === "midi"` so that, once the clock
+    cable lands and the Force becomes master clock, we don't feed Start/Stop back
+    into it (prevents a feedback loop).
+- `easymidi` is already loaded; `send("start")`/`send("stop")` map to 0xFA/0xFC
+  (confirmed in `node_modules/easymidi/index.js`).
+- Also fixed a latent bug in `midi-clock.js`: its default config path pointed at
+  `web/data/` but the config lives at repo-root `data/`, so `midi-clock.json` was
+  silently never read. Now `path.join(__dirname, "..", "data", "midi-clock.json")`.
+
+### Force-side setup (from the Force manual, Preferences → Sync)
+- **Receive = MIDI Clock** — makes the Force honor incoming Start/Stop.
+- (Fallback if Start-only stalls: also have the Mac send continuous MIDI clock, or
+  switch to Receive MMC — not yet decided.)
+
+### Verified
+- `node --check` clean; `npm test` (transport + integration) **23/23**.
+- Live bridge still needs a restart to pick up the new code
+  (`launchctl kickstart -k com.liveshowmanager.bridge`).
+
+### Open / next
+- **Live verify:** press PLAY on iPhone/TUI → Force metronome starts; STOP → stops.
+  Confirm the Force runs at its **internal** tempo on Start-only (no continuous
+  clock). If it stalls, add continuous clock or MMC.
+- When the 2nd DIN cable (Force OUT → M-Track IN) lands, `midi-clock.js` takes over
+  tempo and the `source === "midi"` guard auto-disables Mac→Force Start/Stop.
+
+### Session 10 (cont) — added continuous MIDI Clock; deferred for tonight
+- Added a **continuous MIDI Clock stream** (0xF8, 24 PPQN) at the current song BPM
+  alongside Start/Stop, because a bare Start with no clock stalls the Force. Logs
+  confirmed: `Clock stream @ 70.7 BPM` + `MIDI START/STOP @ 70.7 BPM` flowing to the
+  M-Track output, BPM correct per song (fixed the "stuck at first-song BPM" issue).
+- **Result:** Force metronome still does NOT start. Mac side is confirmed sending;
+  remaining cause is Force-side (Sync → Receive = MIDI Clock not set, or cable on
+  MIDI THRU, or the Force needs a different sync mode). **Deferred — not blocking
+  tonight's show.** Fallback tonight: manual Force PLAY + manual BPM match (as before).
+- Also removed an over-eager guard (`source !== "midi"`) that was silently swallowing
+  the Start/Stop (source was spuriously "midi" from the midi-clock aliasing the
+  M-Track input).

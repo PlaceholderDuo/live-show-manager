@@ -190,6 +190,73 @@ try {
   midiOut = null;
 }
 
+// ═══════════════════════════════════════════════════════════
+// FORCE TRANSPORT OUT (MIDI Clock + Start/Stop → Akai Force via M-Track)
+// The Mac owns song transport. On a play/stop edge we send a continuous
+// MIDI Clock stream (0xF8, 24 PPQN) at the current song BPM plus Start/Stop
+// down the existing control cable (M-Track Plus DIN OUT → Force MIDI IN).
+// The Force, set to Sync Receive = MIDI Clock, slaves to this: its metronome
+// and loops start on Start and run at the song BPM automatically — no manual
+// BPM matching, no drift between the click and the teleprompter. A bare Start
+// with no clock stalls it, so the clock stream is required.
+let forceMidiOut = null;
+let forceClockOutTimer = null;
+let lastForcePlaying = false;
+
+function forceTransport(action) {
+  if (!forceMidiOut) {
+    let name = null;
+    try {
+      name = easymidi.getOutputs().find((p) => /m-track|mtrack|force|akai/i.test(p)) || null;
+    } catch (e) { /* fall through to warn below */ }
+    if (!name) {
+      console.warn("[ForceTransport] No M-Track/Force MIDI output found — transport will not reach the Force.");
+      return;
+    }
+    try {
+      forceMidiOut = new easymidi.Output(name);
+      console.log("[ForceTransport] Opened output → '" + name + "'");
+    } catch (e) {
+      console.warn("[ForceTransport] Could not open output:", e.message);
+      forceMidiOut = null;
+      return;
+    }
+  }
+  try {
+    if (action === "start") {
+      startForceClockOut();
+      forceMidiOut.send("start");
+    } else {
+      forceMidiOut.send("stop");
+      stopForceClockOut();
+    }
+    console.log("[ForceTransport] MIDI " + action.toUpperCase() + " @ " + (state.bpm || 120) + " BPM");
+  } catch (e) {
+    console.warn("[ForceTransport] Send failed:", e.message);
+    forceMidiOut = null;
+  }
+}
+
+// Continuous MIDI Clock (24 PPQN) at the current song BPM. Re-reads state.bpm
+// each beat so a song change or tap-tempo during play is reflected on the next
+// transport start (rate is fixed per start; re-run on stop→start for a new BPM).
+function startForceClockOut() {
+  if (forceClockOutTimer) return;
+  const bpm = state.bpm || 120;
+  const tickMs = Math.max(4, 60000 / bpm / 24);
+  forceClockOutTimer = setInterval(() => {
+    try { if (forceMidiOut) forceMidiOut.send("clock"); } catch (e) {}
+  }, tickMs);
+  console.log("[ForceTransport] Clock stream @ " + bpm + " BPM");
+}
+
+function stopForceClockOut() {
+  if (forceClockOutTimer) {
+    clearInterval(forceClockOutTimer);
+    forceClockOutTimer = null;
+  }
+}
+
 // Mobius 3 default MIDI CC mapping (configurable in Mobius settings)
 const MOBIUS_CC = {
   record: 20,
@@ -1021,6 +1088,15 @@ function broadcastState() {
     state.tempo.bpm = state.bpm;
   }
   if (!state.tempo.ts) state.tempo.ts = Date.now();
+
+  // Drive the Force transport on every play/stop edge (any source: local,
+  // REAPER bridge, OSC, WS). Emits MIDI Start/Stop over the M-Track cable.
+  const forcePlaying = !!state.playing;
+  if (forcePlaying !== lastForcePlaying) {
+    lastForcePlaying = forcePlaying;
+    forceTransport(forcePlaying ? "start" : "stop");
+  }
+
   const payload = { ...state, mixerValues: { ...state.mixerValues }, fxParams: { ...state.fxParams } };
   io.emit("state", payload);
 }

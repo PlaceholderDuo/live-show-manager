@@ -2,13 +2,6 @@
   "name": "_last_session",
   "songs": [
     {
-      "id": "brown_eyed_girl",
-      "folder": "Brown Eyed Girl",
-      "title": "Brown Eyed Girl",
-      "artist": "Van Morrison",
-      "bpm": 79.7
-    },
-    {
       "id": "i_can_t_get_no_satisfaction",
       "folder": "(I Can't Get No) Satisfaction",
       "title": "(I Can't Get No) Satisfaction",
@@ -16,6 +9,6 @@
       "bpm": 70.7
     }
   ],
-  "savedAt": "2026-08-15T15:31:01.006Z",
+  "savedAt": "2026-08-20T21:50:24.854Z",
   "autoSaved": true
 }

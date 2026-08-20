@@ -29,7 +29,7 @@ const BEATS_PER_BAR = 4; // 4/4 grid for downbeat anchoring
 
 class MidiClock {
   constructor(configPath) {
-    this.configPath = configPath || path.join(__dirname, "data", "midi-clock.json");
+    this.configPath = configPath || path.join(__dirname, "..", "data", "midi-clock.json");
     this.input = null;
     this.enabled = true;
 
