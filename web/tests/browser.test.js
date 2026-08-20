@@ -111,6 +111,37 @@ test("HUD conductor: a live 4-tap downbeat keeps the conductor alive (no UI erro
   await page.close();
 });
 
+test("HUD lyrics: inline chords render above their corresponding lyric segment", async () => {
+  const page = await browser.newPage();
+  page.on("pageerror", (e) => pageErrors.push(e.stack || String(e)));
+  await page.goto(`${srv.baseUrl}/hud.html`, { waitUntil: "networkidle0" });
+
+  // Gravity has an intro chord progression immediately before its first verse.
+  // The progression must not bleed into the verse; the verse's [G][C] markers
+  // should be the only chord columns for "Gravity is working against me".
+  mt.set({ playing: true, position: 35.5, bpm: 120, songId: "gravity", currentSong: "Gravity", currentKey: "G" });
+
+  await page.waitForFunction(() => {
+    const line = document.querySelector("#linePresent");
+    return line && line.textContent.includes("Gravity is working against me");
+  }, { timeout: 5000 });
+
+  const rendered = await page.$eval("#linePresent", (line) => {
+    const pairs = [...line.querySelectorAll(".chord-word-pair")];
+    const lyricPair = pairs.find((pair) => pair.querySelector(".word")?.textContent.includes("Gravity"));
+    return {
+      chords: pairs.map((pair) => pair.querySelector(".chord")?.textContent).filter(Boolean),
+      lyricChord: lyricPair?.querySelector(".chord")?.textContent || "",
+      lyric: lyricPair?.querySelector(".word")?.textContent || "",
+    };
+  });
+
+  assert.deepEqual(rendered.chords, ["G", "C"], "only the verse's inline chords are rendered");
+  assert.equal(rendered.lyricChord, "C", "the chord is in the same pair as its lyric segment");
+  assert.equal(rendered.lyric, "Gravity is working against me");
+  await page.close();
+});
+
 test("Teleprompter count-in: REAPER play edge triggers 4→1 count-down from the mock", async () => {
   const page = await browser.newPage();
   page.on("pageerror", (e) => pageErrors.push(e.stack || String(e)));
