@@ -2227,3 +2227,29 @@ sync, we inverted the direction: keep the single cable on the **control** path
 - Also removed an over-eager guard (`source !== "midi"`) that was silently swallowing
   the Start/Stop (source was spuriously "midi" from the midi-clock aliasing the
   M-Track input).
+
+---
+
+## Session 11 — Authoritative lighting sync handoff
+
+### Design decision
+- The live `:3000` Show Manager is now the sole automatic-lighting event producer.
+- The TUI remains responsible for display, queue control, blackout, and manual
+  `FORCE_LOOK` cues; it no longer owns a second free-running beat timer.
+
+### Sync contract
+- `SONG_START` is emitted only on an actual playing transport edge, not when a
+  song is merely staged.
+- `BEAT` includes `song_id`, `bar`, `beat`, `absolute_beat`, `bpm`, `position`,
+  and tempo source.
+- `SECTION_CHANGE` includes normalized canonical section names (`verse`,
+  `prechorus`, `chorus`, `solo`, etc.) plus musical position.
+- Events include a producer timestamp and are written from the authoritative
+  server state.
+
+### Reason
+The former TUI implementation polled `/api/state` every two seconds, started
+its beat timer when `songId` changed, and emitted untimestamped events. That
+could be several beats late or phase-shifted before the lighting engine saw a
+cue. The new path makes synchronization a Show Manager concern and leaves the
+lighting engine transport-agnostic.

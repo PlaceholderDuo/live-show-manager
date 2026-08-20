@@ -478,6 +478,158 @@ const state = {
   setlist: [],        // EDM knob values relayed from ReaLearn → REAPER → here
 };
 
+// Automatic lighting sync belongs to the Show Manager because this process
+// owns transport, position, sections, and the shared tempo authority. The TUI
+// remains a UI/manual-cue client and no longer invents a second beat clock.
+const lightingSync = {
+  songId: null,
+  active: false,
+  lastBeat: -1,
+  lastSection: null,
+};
+
+function writeLightingEvent(event) {
+  if (PORT !== 3000) return; // test/smoke servers must never touch live feed
+  try {
+    fs.appendFileSync("/tmp/lighting_feed", JSON.stringify({
+      ...event,
+      ts: Date.now(),
+    }) + "\n", "utf-8");
+  } catch (err) {
+    console.warn("[LightingSync] Feed write failed:", err.message);
+  }
+}
+
+function lightingSongMeta(songId) {
+  const metaPath = resolveMetaPath(songId);
+  if (!metaPath) return {};
+  try { return JSON.parse(fs.readFileSync(metaPath, "utf-8")); }
+  catch (_) { return {}; }
+}
+
+function lightingGenre(songId) {
+  const meta = lightingSongMeta(songId);
+  try {
+    const mapPath = path.join(os.homedir(), "Music", "iPhoneLiveServer", "data", "genre-map.json");
+    const map = JSON.parse(fs.readFileSync(mapPath, "utf-8"));
+    const genres = map[songId];
+    if (Array.isArray(genres) && genres[0]) return genres[0];
+    if (typeof genres === "string") return genres;
+  } catch (_) {}
+  return meta.genre || "country_rock";
+}
+
+function lightingMood(songId) {
+  return lightingSongMeta(songId).mood || undefined;
+}
+
+function lightingBeatSnapshot() {
+  const bpm = Math.max(1, Number(state.tempo.bpm || state.bpm || 120));
+  const beatsPerBar = Number(state.timeSig && state.timeSig[0]) || 4;
+  const position = Math.max(0, Number(state.position || 0));
+  const beat = Math.floor(position * bpm / 60);
+  return {
+    bpm,
+    beatsPerBar,
+    position,
+    absoluteBeat: beat,
+    bar: Math.floor(beat / beatsPerBar) + 1,
+    beatInBar: (beat % beatsPerBar) + 1,
+  };
+}
+
+function updateLightingSync() {
+  // The automatic feed follows actual transport, not staged song selection.
+  if (!state.playing || !state.songId) {
+    if (lightingSync.active) {
+      writeLightingEvent({ event: "SONG_END", song_id: lightingSync.songId });
+      lightingSync.active = false;
+      lightingSync.songId = null;
+      lightingSync.lastBeat = -1;
+      lightingSync.lastSection = null;
+    }
+    return;
+  }
+
+  const songChanged = lightingSync.songId !== state.songId;
+  if (songChanged || !lightingSync.active) {
+    const meta = lightingSongMeta(state.songId);
+    const snap = lightingBeatSnapshot();
+    lightingSync.songId = state.songId;
+    lightingSync.active = true;
+    lightingSync.lastBeat = -1;
+    lightingSync.lastSection = null;
+    writeLightingEvent({
+      event: "SONG_START",
+      song_id: state.songId,
+      genre: lightingGenre(state.songId),
+      bpm: snap.bpm,
+      mood: lightingMood(state.songId),
+      energy: 0.5,
+      style: "default",
+      position: snap.position,
+      absolute_beat: snap.absoluteBeat,
+      downbeatAt: state.tempo.downbeatAt || 0,
+      time_sig: [snap.beatsPerBar, Number(state.timeSig && state.timeSig[1]) || 4],
+      title: meta.title || state.currentSong || undefined,
+    });
+  }
+
+  const snap = lightingBeatSnapshot();
+  if (snap.absoluteBeat !== lightingSync.lastBeat) {
+    lightingSync.lastBeat = snap.absoluteBeat;
+    writeLightingEvent({
+      event: "BEAT",
+      song_id: state.songId,
+      bar: snap.bar,
+      beat: snap.beatInBar,
+      absolute_beat: snap.absoluteBeat,
+      bpm: snap.bpm,
+      position: snap.position,
+      source: state.tempo.source,
+    });
+  }
+
+  const sections = Array.isArray(state.sections) ? state.sections : [];
+  let current = null;
+  for (const section of sections) {
+    if (Number(section.time || 0) <= snap.position) current = section;
+  }
+  const sectionName = normalizeLightingSection(current && (current.text || current.type));
+  if (sectionName && sectionName !== lightingSync.lastSection) {
+    lightingSync.lastSection = sectionName;
+    writeLightingEvent({
+      event: "SECTION_CHANGE",
+      song_id: state.songId,
+      section: sectionName,
+      energy: estimateLightingEnergy(sectionName),
+      position: snap.position,
+      bar: snap.bar,
+      beat: snap.beatInBar,
+      absolute_beat: snap.absoluteBeat,
+    });
+  }
+}
+
+function estimateLightingEnergy(section) {
+  return {
+    intro: 0.3, verse: 0.3, prechorus: 0.5, chorus: 0.7,
+    bridge: 0.5, solo: 0.85, breakdown: 0.3,
+    final_chorus: 0.85, outro: 0.15, big_moment: 1.0,
+  }[section] || 0.5;
+}
+
+function normalizeLightingSection(value) {
+  const raw = String(value || "").toLowerCase().replace(/[^a-z]+/g, "_");
+  if (raw.includes("final") && raw.includes("chorus")) return "final_chorus";
+  if (raw.includes("pre") && raw.includes("chorus")) return "prechorus";
+  if (raw.includes("big") && raw.includes("moment")) return "big_moment";
+  for (const name of ["intro", "verse", "chorus", "bridge", "solo", "breakdown", "outro"]) {
+    if (raw.includes(name)) return name;
+  }
+  return raw.replace(/^_+|_+$/g, "");
+}
+
 // Per-client context for knob routing
 const clientContexts = new Map();
 
@@ -1088,6 +1240,8 @@ function broadcastState() {
     state.tempo.bpm = state.bpm;
   }
   if (!state.tempo.ts) state.tempo.ts = Date.now();
+
+  updateLightingSync();
 
   // Drive the Force transport on every play/stop edge (any source: local,
   // REAPER bridge, OSC, WS). Emits MIDI Start/Stop over the M-Track cable.
