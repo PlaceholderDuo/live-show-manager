@@ -595,7 +595,7 @@ function updateLightingSync() {
   for (const section of sections) {
     if (Number(section.time || 0) <= snap.position) current = section;
   }
-  const sectionName = normalizeLightingSection(current && (current.text || current.type));
+  const sectionName = normalizeLightingSection(current && (current.type || current.text));
   if (sectionName && sectionName !== lightingSync.lastSection) {
     lightingSync.lastSection = sectionName;
     writeLightingEvent({
