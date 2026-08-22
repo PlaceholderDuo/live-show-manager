@@ -2253,3 +2253,38 @@ its beat timer when `songId` changed, and emitted untimestamped events. That
 could be several beats late or phase-shifted before the lighting engine saw a
 cue. The new path makes synchronization a Show Manager concern and leaves the
 lighting engine transport-agnostic.
+
+---
+
+## 2026-08-22 (Show Day) — Pre-show testing + FIFO-proof feed writes
+
+Full pre-show test day. Repo tagged `pre-show-2026-08-22` on GitHub before changes.
+
+### Testing (all green)
+- `npm test`: **30/30** (re-run again AFTER the code change below, still 30/30).
+- Failure sims: SIGKILL bridge → launchd respawn <3s; killed light pipeline →
+  writers did not block; WS connect + state broadcast OK.
+- Puppeteer smoke on controller/HUD/connect pages: zero JS console errors;
+  served hud.js/controller.js byte-identical to live-stage-hud repo HEAD.
+- `/api/preflight` healthy (REAPER not connected = expected pre-show).
+
+### Change: `ensureFeedWritable()` guard in server.js
+`writeLightingEvent` used bare `fs.appendFileSync("/tmp/lighting_feed", ...)`.
+If the feed path ever became a READERLESS FIFO (e.g. someone runs the old
+`mkfifo /tmp/lighting_feed` habit from Session-19 docs), that call would block
+forever and freeze the entire bridge mid-show — verified experimentally (test
+writer hung >15s with no reader).
+
+New guard before every append:
+- feed missing → create empty regular file;
+- regular file → unchanged fast path;
+- FIFO → probe-open with `O_WRONLY|O_NONBLOCK|O_APPEND`: success = live reader,
+  leave untouched (events flow); ENXIO = readerless → rename aside to
+  `.fifo-<ts>`, recreate as regular file, loud `[LightingSync]` warning.
+
+Sandbox-tested all three branches (rescue returned in 1ms; FIFO-with-reader
+case delivered the event through the pipe untouched). Same guard shipped in
+iPhoneLiveServer `server/api/lighting.js`.
+
+### Also
+- favicon.ico added (only console 404 on :3000 was favicon.ico).

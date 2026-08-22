@@ -488,9 +488,43 @@ const lightingSync = {
   lastSection: null,
 };
 
+// The feed must be a REGULAR file (never blocks writers). A FIFO with no
+// reader would freeze the event loop inside appendFileSync, so if we ever
+// find a readerless FIFO at the feed path we move it aside and recreate a
+// regular file. A FIFO WITH an active reader is left untouched.
+function ensureFeedWritable(path) {
+  let st = null;
+  try { st = fs.statSync(path); } catch (_) {}
+  if (!st) {
+    try { fs.writeFileSync(path, ""); } catch (_) {}
+    return;
+  }
+  if (st.isFile()) return;
+  if (!st.isFIFO()) return; // unknown node type — let appendFileSync report it
+  const flags = fs.constants.O_WRONLY | fs.constants.O_NONBLOCK | fs.constants.O_APPEND;
+  let fd = null;
+  try {
+    fd = fs.openSync(path, flags);
+    fs.closeSync(fd);
+    return; // reader present — FIFO is live, writes will go through
+  } catch (_) {
+    // ENXIO: nobody is reading this FIFO — writing would block forever
+  }
+  const backup = `${path}.fifo-${Date.now()}`;
+  try {
+    fs.renameSync(path, backup);
+    console.warn(`[LightingSync] Feed was a READERLESS FIFO (freeze risk) — moved to ${backup}, recreated as regular file.`);
+  } catch (err) {
+    console.warn(`[LightingSync] Could not replace readerless FIFO: ${err.message}`);
+    throw err;
+  }
+  try { fs.writeFileSync(path, ""); } catch (_) {}
+}
+
 function writeLightingEvent(event) {
   if (PORT !== 3000) return; // test/smoke servers must never touch live feed
   try {
+    ensureFeedWritable("/tmp/lighting_feed");
     fs.appendFileSync("/tmp/lighting_feed", JSON.stringify({
       ...event,
       ts: Date.now(),
