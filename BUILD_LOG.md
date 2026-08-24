@@ -2306,9 +2306,11 @@ Repo tags on GitHub (rollback anchors, all pushed): `pre-show-2026-08-22`,
 3. `npm test` in `.../Live Show Manager/web` → expect **30/30**.
 4. Left over on purpose (not blocking): ACHY/other corrupted-chart warnings remain
    (see below); Force-as-master-clock still not wired; HUD is un-contested default.
-5. Runtime artifacts re-dirty every restart: `web/public/qr.png`,
-   `data/setlists/_last_session.json` (LSM), `data/queue.json` (iPhone server).
-   `git restore` them before committing — they are regenerated noise, never the fix.
+5. **`data/setlists/_last_session.json` is the LIVE setlist, not noise** — the
+   bridge restores it on startup and re-writes it on every setlist change. When
+   it differs from HEAD, the working-tree version is the authoritative current
+   setlist: COMMIT it, never `git restore` it. (`qr.png` is regenerated per boot
+   with the current LAN IP — committing it is convention, or it can be ignored.)
 
 ### Session scope (this was the FULL pre-show+show cycle's lyric/teleprompter work)
 Fixed three live-feedback items reported after the prior show:
