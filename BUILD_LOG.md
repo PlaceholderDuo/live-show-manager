@@ -2288,3 +2288,88 @@ iPhoneLiveServer `server/api/lighting.js`.
 
 ### Also
 - favicon.ico added (only console 404 on :3000 was favicon.ico).
+
+---
+
+## 2026-08-24 (Post-show) — Session wrap + NEXT-SESSION PICKUP POINT
+
+Repo tags on GitHub (rollback anchors, all pushed): `pre-show-2026-08-22`,
+`rollback-save-20260822-0439`, `show-2026-08-08`.
+
+### ═══ NEXT SESSION — RESUME HERE ═══
+1. Servers should already be up: :3000 bridge (launchd `com.liveshowmanager.bridge`,
+   kickstart `launchctl kickstart -k gui/$(id -u)/com.liveshowmanager.bridge`),
+   :3300 singer (`nohup node server/index.js`). TUI is NOT running (needs a TTY —
+   `start show server` from a real Terminal).
+2. Verify pick-up: `curl :3000/api/state`, `curl :3300/api/config/teleprompter`
+   (expect `left_button_mode:"rewind_1line"`, `right_button_mode:"skip_1line"`).
+3. `npm test` in `.../Live Show Manager/web` → expect **30/30**.
+4. Left over on purpose (not blocking): ACHY/other corrupted-chart warnings remain
+   (see below); Force-as-master-clock still not wired; HUD is un-contested default.
+5. Runtime artifacts re-dirty every restart: `web/public/qr.png`,
+   `data/setlists/_last_session.json` (LSM), `data/queue.json` (iPhone server).
+   `git restore` them before committing — they are regenerated noise, never the fix.
+
+### Session scope (this was the FULL pre-show+show cycle's lyric/teleprompter work)
+Fixed three live-feedback items reported after the prior show:
+1. **Chords not shown** — routed `/teleprompter` on :3300 to the real Stage HUD
+   (`302 → http://<host>:3000/hud.html`); `hud.js` now respects section
+   boundaries so an intro/progression chord line can't bleed into the first
+   lyric of the next section, and inline `[Chord]word` placement stays
+   authoritative. (Chord placement commit `e8d0988`.)
+2. **First-verse lyric jump / back** — two root causes fixed:
+   - `web/public/timing.js`: every lyric line now gets a stable time. Untimed
+     lines are interpolated between their nearest real anchors (flagged
+     `estimated` so sync-health still reports honestly). Verified monotonic +
+     0 nulls across tonight's setlist (ACHY, Dirty Deeds, Satisfaction, Gravity).
+   - `web/public/hud.js` `estimateLineTimes`: anchors are kept in SOURCE order
+     (the old time-sort reassigned verse positions) and isolated forward spikes
+     (e.g. Dirty Deeds' 212s-then-40s) are dropped — mirrors server-side timing.
+   - Browser-sweep verified: every position lands on the exact correct line.
+3. **Skip-ahead/back buttons unusable live**:
+   - Root cause: the iPhone's `seek` WS action was **silently ignored** whenever
+     REAPER was connected (only local-mode seek ran). Now `requestSeek()` in
+     `web/server.js` optimistically broadcasts the new position AND forwards an
+     absolute `{cmd:"seek", position}` via `control_command.json`; `runner.lua`
+     applies it and re-anchors `_playStartTime.
+   - Default mode changed to **1 line** (`rewind_1line`/`skip_1line`, configured
+     via :3300 teleprompter config — TUI dropdowns updated too). Presses send an
+     ABSOLUTE target so repeated taps never accumulate stale offsets.
+   - iPhone feedback: `LINE x/y` counter + an animated flash pill showing
+     direction and a preview of the target lyric. Removed dead duplicate
+     `tele_action` button listeners (server never handled `tele_action`).
+4. **Stage HUD "see ahead"** — non-current lines are much brighter (opacity 1,
+   lighter greys), and chords are NEVER hidden/dimmed in any rolling window so
+   upcoming changes can be read early.
+
+### Files changed (3 repos)
+- **live-show-manager** (`web/…`): server.js (`requestSeek`, `CONTROL_COMMAND_PATH`
+  env-override, `estimated` in lyric extractor, stricter sync-health), public/timing.js,
+  runner/runner.lua, package.json (`--test-concurrency=1` — parallel test files
+  flaked/hung), tests/integration.test.js (+2 seek regressions), tests/lib/spawn-server.js.
+- **live-stage-hud** (`web/public/…`, symlinked into :3000): hud.js, hud.css,
+  controller.js, controller.css.
+- **iPhoneLiveServer**: scripts/tui.js (1-line mode options + defaults),
+  server/api/auth.js (config defaults), data/config.json.
+
+### Verified
+- `npm test` → **30/30** (transport 9, integration 16 incl. new seek tests,
+  browser 5). Runs serially now.
+- Post-restart live curl checks: config returns 1-line defaults; hud.js has
+  spike-drop; controller has feedback pill; `/api/chordpro/Gravity` → 200;
+  `:3300/teleprompter` → 302.
+
+### Current git state (pushed, main == origin/main)
+- live-show-manager: `301f9ca` (Show-day hardening: FIFO-proof feed writes)
+- live-stage-hud: `5c3ce3f` (pre-show verification pass)
+- iPhoneLiveServer: `2dc26ca` (launchd KeepAlive :3300 + FIFO-proof writes + favicon)
+- Rollback anchor tag (same name on all three): `rollback-save-20260822-0439`.
+
+### Known WARN / deferred
+- **ACBY / Dirty-Deeds-style charts** have genuinely scrambled imported @time
+  (e.g. duplicated verse stanzas, a `##` header carrying `@time=80`). Runtime no
+  longer jumps (monotonic enforcement + `seenTime` guard), but their *chart data*
+  should be re-imported from LRCLIB at some point — flagged in sync-health as WARN.
+- Akai Force as master click/transport: researched, not wired (see older sessions).
+- `tools/test-hud-display.js` is a STALE replica of an older hud.js parser — do
+  not trust its output; trust the Puppeteer browser tests instead.
