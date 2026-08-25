@@ -142,6 +142,33 @@ test("HUD lyrics: inline chords render above their corresponding lyric segment",
   await page.close();
 });
 
+test("HUD lyrics: annotated ## section headers attach markers to the NEXT section, not a stray row", async () => {
+  const page = await browser.newPage();
+  page.on("pageerror", (e) => pageErrors.push(e.stack || String(e)));
+  await page.goto(`${srv.baseUrl}/hud.html`, { waitUntil: "networkidle0" });
+
+  // Give Me One Reason: "@time=... ## Chorus 1" then /F#/ then a lyric. When
+  // the header is misparsed as an empty row, /F#/ floats and the chord lands a
+  // line below its lyric. The fix must leave exactly [F#]Give me one reason.
+  mt.set({ playing: true, position: 33, bpm: 112, songId: "give_me_one_reason", currentSong: "Give Me One Reason" });
+  await page.waitForFunction(() => {
+    const line = document.querySelector("#linePresent");
+    return line && line.textContent.includes("Give me one reason to stay");
+  }, { timeout: 5000 });
+
+  const rendered = await page.$eval("#linePresent", (line) => ({
+    pairs: [...line.querySelectorAll(".chord-word-pair")].map((pair) => ({
+      chord: pair.querySelector(".chord")?.textContent.trim() || "",
+      word: pair.querySelector(".word")?.textContent.trim() || "",
+    }))
+      .filter((p) => p.chord && p.chord !== "\u00a0"),
+  }));
+
+  assert.deepEqual(rendered.pairs, [{ chord: "F#", word: "Give me one reason to stay here" }],
+    "chord F# is attached to its own lyric, not floating as a separate row");
+  await page.close();
+});
+
 test("Teleprompter count-in: REAPER play edge triggers 4→1 count-down from the mock", async () => {
   const page = await browser.newPage();
   page.on("pageerror", (e) => pageErrors.push(e.stack || String(e)));

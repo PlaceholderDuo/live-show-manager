@@ -763,10 +763,15 @@ function parseChoproDirectiveSections(text) {
 
     // Legacy `## Section Label` headers (UG export style) start a new section.
     // Examples: "## Verse 1", "## Chords @21.27". The trailing @N.N is a time
-    // hint we can use later for section timing.
-    if (/^##\s/.test(trimmed)) {
+    // hint we can use later for section timing. Headers may also carry leading
+    // annotations ("@time=36.13 @bar=15 ## Chorus 1") — strip those first so
+    // the section change is recognized instead of being misread as a lyric.
+    const hdrLine = trimmed.replace(/^@time\s*=\s*[\d]+\.?\d*\s*/i, "")
+                           .replace(/^@bar\s*=\s*\d+\s*/i, "")
+                           .trim();
+    if (/^##\s/.test(hdrLine)) {
       flushSection();
-      let label = trimmed.replace(/^##\s+/, "").replace(/\s+@[\d.]+$/, "").trim() || "Section";
+      let label = hdrLine.replace(/^##\s+/, "").replace(/\s+@[\d.]+$/, "").trim() || "Section";
       currentType = "verse";
       currentLabel = label;
       inSection = true;
