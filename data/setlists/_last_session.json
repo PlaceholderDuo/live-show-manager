@@ -2,6 +2,104 @@
   "name": "_last_session",
   "songs": [
     {
+      "id": "come_together",
+      "folder": "Come Together",
+      "title": "Come Together",
+      "artist": "The Beatles",
+      "bpm": 102.2
+    },
+    {
+      "id": "mary_jane_s_last_dance",
+      "folder": "Mary Jane's Last Dance",
+      "title": "Mary Jane's Last Dance",
+      "artist": "Tom Petty & The Heartbreakers",
+      "bpm": 84.8
+    },
+    {
+      "id": "life_of_sin",
+      "folder": "Life of Sin",
+      "title": "Life of Sin",
+      "artist": "Sturgill Simpson",
+      "bpm": 85.5
+    },
+    {
+      "id": "little_wing",
+      "folder": "Little Wing",
+      "title": "Little Wing",
+      "artist": "Stevie Ray Vaughan & Double Trouble",
+      "bpm": 64.7
+    },
+    {
+      "id": "pride_and_joy",
+      "folder": "Pride and Joy",
+      "title": "Pride and Joy",
+      "artist": "Stevie Ray Vaughan",
+      "bpm": 62.9
+    },
+    {
+      "id": "aint_no_sunshine",
+      "folder": "Aint No Sunshine",
+      "title": "Aint No Sunshine",
+      "artist": "Bill Withers",
+      "bpm": 81.3
+    },
+    {
+      "id": "gentle_on_my_mind",
+      "folder": "Gentle on My Mind",
+      "title": "Gentle on My Mind",
+      "artist": "Glen Campbell",
+      "bpm": 54.7
+    },
+    {
+      "id": "comfortably_numb",
+      "folder": "Comfortably Numb",
+      "title": "Comfortably Numb",
+      "artist": "Pink Floyd",
+      "bpm": 67.5
+    },
+    {
+      "id": "give_me_one_reason",
+      "folder": "Give Me One Reason",
+      "title": "Give Me One Reason",
+      "artist": "Tracy Chapman",
+      "bpm": 129.9
+    },
+    {
+      "id": "honky_tonk_women",
+      "folder": "HONKY TONK WOMEN",
+      "title": "HONKY TONK WOMEN",
+      "artist": "The Rolling Stones",
+      "bpm": 110.7
+    },
+    {
+      "id": "im_on_fire",
+      "folder": "Im on Fire",
+      "title": "Im on Fire",
+      "artist": "Bruce Springsteen",
+      "bpm": 88.6
+    },
+    {
+      "id": "rebel_yell",
+      "folder": "REBEL YELL",
+      "title": "REBEL YELL",
+      "artist": "Billy Idol",
+      "bpm": 87.5
+    },
+    {
+      "id": "867_5309_jenny",
+      "folder": "867-5309 Jenny",
+      "title": "867-5309 Jenny",
+      "artist": "Tommy Tutone",
+      "bpm": 71.2
+    },
+    {
+      "id": "miss_you",
+      "folder": "Miss You",
+      "title": "Miss You",
+      "artist": "The Rolling Stones",
+      "bpm": 55.7
+    },
+    {
       "id": "i_can_t_get_no_satisfaction",
       "folder": "(I Can't Get No) Satisfaction",
       "title": "(I Can't Get No) Satisfaction",
@@ -9,20 +107,20 @@
       "bpm": 70.7
     },
     {
-      "id": "achy_breaky_heart",
-      "folder": "ACHY BREAKY HEART",
-      "title": "ACHY BREAKY HEART",
-      "artist": "Billy Ray Cyrus",
-      "bpm": 123.5
+      "id": "blue_on_black",
+      "folder": "Blue on Black",
+      "title": "Blue on Black",
+      "artist": "Kenny Wayne Shepherd",
+      "bpm": 152.7
     },
     {
-      "id": "dirty_deeds_done_dirt_cheap",
-      "folder": "Dirty Deeds Done Dirt Cheap",
-      "title": "Dirty Deeds Done Dirt Cheap",
-      "artist": "AC/DC",
-      "bpm": 70.2
+      "id": "call_me_the_breeze",
+      "folder": "Call Me the Breeze",
+      "title": "Call Me the Breeze",
+      "artist": "Lynyrd Skynyrd",
+      "bpm": 94.6
     }
   ],
-  "savedAt": "2026-08-22T16:23:31.930Z",
+  "savedAt": "2026-08-25T10:09:25.066Z",
   "autoSaved": true
 }
