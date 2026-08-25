@@ -2445,3 +2445,17 @@ live `/api/state` + server.log) proved:
 5. Left over (not blocking): ACHY/Dirty-Deeds scrambled charts still worth a
    LRCLIB re-import; Akai Force master-clock not wired; `tools/test-hud-display.js`
    is a stale replica — trust Puppeteer tests.
+
+---
+
+## 2026-08-25 (Post-show wrap) — Show-state lock
+
+Show state locked and tagged `show-2026-08-22` on GitHub (all four projects).
+Rollback:
+
+```bash
+cd "$HOME/Library/Application Support/REAPER/Scripts/Live Show Manager" && git fetch origin && git reset --hard show-2026-08-22
+```
+
+Verified post-show: Mac rebooted Aug 25 04:08 and this bridge auto-started via
+launchd with zero intervention. No code changes in this entry.
