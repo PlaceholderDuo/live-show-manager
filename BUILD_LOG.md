@@ -2375,3 +2375,73 @@ Fixed three live-feedback items reported after the prior show:
 - Akai Force as master click/transport: researched, not wired (see older sessions).
 - `tools/test-hud-display.js` is a STALE replica of an older hud.js parser — do
   not trust its output; trust the Puppeteer browser tests instead.
+
+---
+
+## 2026-08-24 (Post-show) — Follow-up #2: off-by-one chord placement + live-setlist persistence
+
+Pushed after the earlier session-wrap entry. Two separate findings resolved.
+
+### A. Teleprompter chords sat a line or two below their lyric
+
+User report (Stage HUD rolling view): chords appeared one/two rows under the
+lyric they belong to (roughly "LYRICS A / stray chord row / LYRICS B / A's
+chords …"). Root causes and fixes:
+
+1. **`##` headers hidden behind timing annotations.** Many charts write
+   `@time=36.13 @bar=15  ## Chorus 1`. The parsers only recognized `##` at the
+   *start* of a line, so:
+   - `@time=30.97 @bar=13 ## verse` (first header) leaked through as a literal
+     lyric row (`## verse` on its own line).
+   - `## Chorus 1` became an empty spacer line that never updated the section
+     label, so chord markers from DIFFERENT sections collapsed together and one
+     stray chord-only row (e.g. Intro's `/F#/`) floated, pushing real chords
+     down a line.
+   - **Fix:** strip leading `@time=`/`@bar=` before the `##` check in both
+     `hud.js` `parseChordPro` and `server.js` `parseChoproDirectiveSections`.
+2. **Chord-only runs crossed section boundaries.** The run detector grouped
+   consecutive chord-only lines into one instrumental grid even across a section
+   change (Intro `/F#/` + Chorus `/F#/` → one grid, lyric lost its chord).
+   - **Fix:** runs now continue only while `lines[i+1].label === runStart.label`,
+     so each section's markers attach to their own first lyric.
+
+Verified via new Puppeteer regression in `tests/browser.test.js`
+("annotated ## section headers attach markers to the NEXT section") and
+confirmed DOM output: `[F#]Give me one reason to stay here`, `[Am7]I've been
+holding out so long`, etc. Full suite **31/31**.
+
+Files: live-stage-hud `web/public/hud.js`; live-show-manager `web/server.js`.
+Bridge restarted to serve the fix.
+
+### B. `_last_session.json` / `qr.png` kept re-dirtying — they are LIVE data
+
+Earlier wraps treated them as noise and `git restore`d them; that was wrong and
+could have clobbered the real setlist. Investigation (no assumptions: diff +
+live `/api/state` + server.log) proved:
+- `data/setlists/_last_session.json` is the Show Manager's authoritative
+  setlist: `loadSessionSetlist()` restores it on startup and
+  `saveSessionSetlist()` re-writes it on every setlist change. HEAD held a stale
+  3-song checkpoint; working tree held the real 17-song setlist.
+- `qr.png` is regenerated per boot with the current LAN IP (`qrencode`).
+- Saved the live setlist + current QR; corrected the pickup note in both this
+  log and iPhoneLiveServer's (commit it, never restore).
+
+### Current git state (all pushed, main == origin/main, tags intact)
+- live-show-manager: `4692e0e` (rollback tag `rollback-save-20260822-0439`)
+- live-stage-hud: `ca90511`
+- iPhoneLiveServer: `d6e96ea`
+
+### ═══ NEXT SESSION — RESUME HERE (updated) ═══
+1. Servers: :3000 bridge via launchd (`com.liveshowmanager.bridge`) and :3300
+   singer (`nohup node server/index.js`) should both be up; TUI needs a TTY
+   (`start show server`). Restart bridge with
+   `launchctl kickstart -k gui/$(id -u)/com.liveshowmanager.bridge`.
+2. Verify pick-up: `curl :3000/api/state`, `curl :3300/api/config/teleprompter`
+   (expect `left_button_mode:"rewind_1line"`, `right_button_mode:"skip_1line"`).
+3. `npm test` in `.../Live Show Manager/web` → expect **31/31** (serial).
+4. If `git status` in the LSM repo shows `data/setlists/_last_session.json` or
+   `web/public/qr.png` modified, that is the LIVE setlist / current-boot QR —
+   commit them, never `git restore`. Building on stale data would drop the set.
+5. Left over (not blocking): ACHY/Dirty-Deeds scrambled charts still worth a
+   LRCLIB re-import; Akai Force master-clock not wired; `tools/test-hud-display.js`
+   is a stale replica — trust Puppeteer tests.
